@@ -9,6 +9,7 @@
   },
   "files": [
     "paseo-plugin.json",
+    "icon.png",
     "icon.svg",
     "index.server.ts",
     "server/",
@@ -20,7 +21,8 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "tsc -p tsconfig.json && node --test dist/test/*.test.js",
-    "test:live": "tsc -p tsconfig.json && DOUBAO_LIVE=1 node --test dist/test/*.test.js"
+    "test:live": "tsc -p tsconfig.json && DOUBAO_LIVE=1 node --test dist/test/*.test.js",
+    "e2e": "bash scripts/e2e.sh"
   },
   "devDependencies": {
     "@getpaseo/plugin": "0.17.6",

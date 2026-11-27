@@ -89,6 +89,8 @@ npm install
 npm run typecheck
 npm test          # unit tests, no CLI needed
 npm run test:live # unit tests + real CLI (sends one tiny prompt)
+npm run e2e       # throwaway Paseo daemon on a free port, installs the plugin,
+                  # runs a turn and a follow-up that proves resume worked
 ```
 
 Test layout:
@@ -103,6 +105,7 @@ Test layout:
 | `errors.test.ts` | stderr cleanup and error codes |
 | `live.test.ts` | real `model list` and `--list` |
 | `live-provider.test.ts` | full provider connection: open → prompt → completed → persistence |
+| `scripts/e2e.sh` | isolated Paseo daemon on a free port: install, run, resume |
 
 ## Limitations
 

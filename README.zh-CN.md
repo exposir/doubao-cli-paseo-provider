@@ -66,6 +66,8 @@ npm install
 npm run typecheck
 npm test          # 单元测试，不需要 CLI
 npm run test:live # 单元测试 + 真实 CLI（会发一条很小的提示词）
+npm run e2e       # 起一个临时 Paseo daemon（随机空闲端口），装插件、跑一轮、
+                  # 再追问一轮验证续聊
 ```
 
 | 测试文件 | 覆盖内容 |
@@ -78,6 +80,7 @@ npm run test:live # 单元测试 + 真实 CLI（会发一条很小的提示词�
 | `errors.test.ts` | stderr 清理与错误码 |
 | `live.test.ts` | 真实 `model list` 与 `--list` |
 | `live-provider.test.ts` | 完整链路：open → prompt → completed → 持久化 |
+| `scripts/e2e.sh` | 临时 Paseo daemon（随机端口）：安装、运行、续聊 |
 
 ## 已知限制
 
