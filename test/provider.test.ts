@@ -418,8 +418,72 @@ test("concurrent turns are capped per connection", async () => {
   await connection.close();
 });
 
-test("a finished turn releases the concurrency slot", async () => {
+test("the concurrency cap is global across connections", async () => {
   clearCatalogCache();
+  const { launch, dir } = sleepCli();
+  const registration = createDoubaoProvider({
+    limits: { maxConcurrentTurns: 1, stallTimeoutMs: 0 },
+  });
+
+  const first = await registration.connect({
+    versions: [1],
+    capabilities: ["prompt.message"],
+    launch,
+  });
+  const second = await registration.connect({
+    versions: [1],
+    capabilities: ["prompt.message"],
+    launch,
+  });
+
+  const events: ProviderEvent[] = [];
+  first.onEvent((event) => events.push(event));
+  second.onEvent((event) => events.push(event));
+
+  for (const [connection, id] of [
+    [first, "a"],
+    [second, "b"],
+  ] as const) {
+    await connection.send({
+      type: "session.open",
+      requestId: `open-${id}`,
+      sessionId: id,
+      history: "skip",
+      config: { cwd: dir, env: {}, mcpServers: {}, settings: {}, persist: false },
+    });
+  }
+  await waitFor(() => events.filter((event) => event.type === "session.ready").length === 2);
+
+  const prompt = (sessionId: string) => ({
+    type: "session.prompt" as const,
+    sessionId,
+    prompt: {
+      clientMessageId: `c-${sessionId}`,
+      delivery: "auto" as const,
+      input: { type: "message" as const, content: [{ type: "text" as const, text: "hi" }] },
+    },
+  });
+
+  await first.send(prompt("a"));
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  await second.send(prompt("b"));
+
+  await waitFor(() =>
+    events.some((event) => event.type === "session.prompt_result" && event.result.type === "failed"),
+  );
+  const failed = events.find(
+    (event) => event.type === "session.prompt_result" && event.result.type === "failed",
+  );
+  assert.ok(failed && failed.type === "session.prompt_result");
+  if (failed.result.type === "failed") {
+    assert.equal(failed.result.error.code, "TOO_MANY_TURNS");
+  }
+
+  await first.close();
+  await second.close();
+});
+
+test("a finished turn releases the concurrency slot", async () => {  clearCatalogCache();
   const { launch, dir } = promptCli();
   const registration = createDoubaoProvider({ limits: { maxConcurrentTurns: 1 } });
   const connection = await registration.connect({
@@ -566,8 +630,9 @@ fi
   await waitFor(() => events.filter((event) => event.type === "sessions").length === 2);
 
   const calls = readFileSync(join(dir, "list-args.log"), "utf8").trim().split("\n");
-  assert.match(calls[0], /--limit 1$/);
-  assert.match(calls[1], /--limit 200$/);
+  assert.equal(calls.length, 2);
+  assert.ok(calls.some((call) => /--limit 1$/.test(call)));
+  assert.ok(calls.some((call) => /--limit 200$/.test(call)));
 
   await connection.close();
 });

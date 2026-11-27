@@ -32,6 +32,9 @@ export interface DoubaoProviderOptions {
 }
 
 let reaped = false;
+// Paseo opens a provider connection per agent, so the limit must live on the
+// module, not on one connection, or every agent gets its own allowance.
+let activeTurns = 0;
 
 function reapStaleChildrenOnce(): void {
   if (reaped) return;
@@ -111,7 +114,6 @@ function createConnection(
 
   let catalog: ProviderCatalog | null = null;
   let catalogLoading: Promise<ProviderCatalog> | null = null;
-  let activeTurns = 0;
   let closed = false;
 
   function emit(event: ProviderEvent): void {
