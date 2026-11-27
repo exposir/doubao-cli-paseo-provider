@@ -108,8 +108,10 @@ doubao model list --output-format json
 | `stallTimeoutMs` | 5 分钟 | 无输出则终止，`TURN_STALLED` |
 | `maxAssistantBytes` | 4 MiB | 在 UTF-8 边界截断并标记 |
 | `maxStderrBytes` | 64 KiB | 错误详情截断并标记 |
-| `maxPromptBytes` | 1 MiB | 启动前拒绝，`PROMPT_TOO_LARGE` |
+| `maxPromptBytes` | 1 MiB / 262,144 码点 | 启动前拒绝，`PROMPT_TOO_LARGE` |
 | `minFreeDiskBytes` | 512 MiB | 拒绝本轮，`DISK_LOW` |
+
+单次工具调用的卡片输出上限为 64 KiB，避免一条命令把 daemon 撑大。
 
 无需重新构建即可调整：
 
@@ -135,7 +137,8 @@ export DOUBAO_PASEO_MIN_FREE_DISK_MB=1024
 该参数只是透传，Paseo 不负责审批。
 
 需要隔离时，把 daemon 或工作区放进容器、沙箱或独立用户下运行；不要把它指向不能接受无人值守
-写入的目录。
+写入的目录。新会话会有一条可关闭的 warning 说明这一点；受控环境可用
+`DOUBAO_PASEO_SUPPRESS_NOTICES=1` 关掉。
 
 ## 开发
 
@@ -164,6 +167,7 @@ npm run scenarios # 日常任务、图片、长任务、并发上限
 | `limits.test.ts` | 环境变量、非法值、UTF-8 截断 |
 | `performance.test.ts` | 2 万 delta 保持线性 |
 | `reaper.test.ts` | 只回收带标记的孤儿进程 |
+| `tools.test.ts` | tool_use/tool_result 提取、工具卡片详情、输出封顶 |
 
 完整矩阵和环境变量见 [docs/TESTING.md](docs/TESTING.md)。
 
@@ -171,6 +175,8 @@ npm run scenarios # 日常任务、图片、长任务、并发上限
 
 - Paseo 插件 SDK：对 **0.15.0** 和 **0.17.6** 做类型检查；daemon E2E 在 **0.17.6**。
 - 豆包 CLI：**2.38.4**。
+- 测试：**155 个单测** + 3 个 live。
+- 场景：**8/8** 通过——快问快答、新闻搜索、写文件、读代码、多轮回忆、图片、长任务 + 并发探针。
 - Soak：**20 轮**，daemon RSS 平稳（峰值 166 MB，增长 0 MB），零残留进程，重启后仍能续聊。
 - 中断：真实图片任务中途停止，豆包进程清零，agent 回到 idle。
 
@@ -192,6 +198,7 @@ npm run scenarios # 日常任务、图片、长任务、并发上限
 | 续聊丢上下文 | 原生 id 没持久化 | 检查是否出现 `session.persistence` 事件 |
 | `Workspace not found` | 工作区 id 过期 | 在新项目里用 `--new-workspace local` |
 | 报 `DISK_LOW` | 低于磁盘余量下限 | 清理空间或调低 `DOUBAO_PASEO_MIN_FREE_DISK_MB` |
+| 长分析报 `SIGNAL_SIGKILL` | 单个请求超过 CLI 服务时限 | 拆分提示词，或依赖内置安全说明限制读取量 |
 
 ## 许可证
 

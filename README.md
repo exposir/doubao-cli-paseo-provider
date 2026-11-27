@@ -110,8 +110,10 @@ the host's disk with it.
 | `stallTimeoutMs` | 5 min | silent turn stops with `TURN_STALLED` |
 | `maxAssistantBytes` | 4 MiB | text is cut at a UTF-8 boundary and marked |
 | `maxStderrBytes` | 64 KiB | error detail is cut and marked |
-| `maxPromptBytes` | 1 MiB | rejected with `PROMPT_TOO_LARGE` |
+| `maxPromptBytes` | 1 MiB / 262,144 code points | rejected with `PROMPT_TOO_LARGE` |
 | `minFreeDiskBytes` | 512 MiB | refused with `DISK_LOW` |
+
+Tool card output is capped at 64 KiB per call, so a chatty command cannot bloat the daemon.
 
 Tune without rebuilding:
 
@@ -143,7 +145,9 @@ unacceptable.
 
 Shell commands that would start another Doubao or Paseo turn (`doubao -p`, `doubao --resume`,
 `paseo run/send/...`) are detected when the tool call starts: the card is marked canceled and the
-turn stops with a warning instead of deadlocking.
+turn stops with a warning instead of deadlocking. A dismissible banner at session start explains
+the approval limitation; set `DOUBAO_PASEO_SUPPRESS_NOTICES=1` to hide it in controlled
+environments.
 
 ## Development
 
@@ -172,6 +176,7 @@ npm run scenarios # everyday tasks, image generation, long task, concurrency cap
 | `limits.test.ts` | env overrides, invalid values, UTF-8 truncation |
 | `performance.test.ts` | 20k deltas stay linear |
 | `reaper.test.ts` | orphan sweep touches marked processes only |
+| `tools.test.ts` | tool_use/tool_result extraction, tool-card details, output caps |
 
 See [docs/TESTING.md](docs/TESTING.md) for the full matrix and environment variables.
 
@@ -179,6 +184,9 @@ See [docs/TESTING.md](docs/TESTING.md) for the full matrix and environment varia
 
 - Paseo plugin SDK: typechecked against **0.15.0** and **0.17.6**; daemon E2E on **0.17.6**.
 - Doubao CLI: **2.38.4**.
+- Tests: **155 unit** tests plus 3 live tests.
+- Scenarios: **8/8** — quick answer, news search, file write, code reading, multi-turn,
+  image, long task with a concurrency probe.
 - Soak: **20 turns**, daemon RSS flat (166 MB peak, 0 MB growth), zero leaked processes,
   resume after restart.
 - Interrupt: a real image turn stopped mid-flight, zero Doubao processes left, agent back to idle.
@@ -201,6 +209,7 @@ See [docs/TESTING.md](docs/TESTING.md) for the full matrix and environment varia
 | Follow-up loses context | native id not persisted | check for a `session.persistence` event |
 | `Workspace not found` | stale workspace id | `--new-workspace local` in a fresh project |
 | Turn fails with `DISK_LOW` | below the free-space floor | free space or lower `DOUBAO_PASEO_MIN_FREE_DISK_MB` |
+| `SIGNAL_SIGKILL` on a long analysis | one request exceeded the CLI service budget | split the prompt, or let the built-in safety note cap reading |
 
 ## License
 
