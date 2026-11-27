@@ -122,7 +122,11 @@ keep their Doubao session ids as long as the CLI still accepts them.
 
 ## Known limitations
 
-- The timeline is text only; tool calls and diffs are not mapped to Paseo cards.
+- Tool calls render as Paseo cards; results are text, and structured diffs appear only when the
+  CLI returns one.
+- A single model request that grows too large can be killed by the CLI service around 90–100 s.
+  Split big analyses into smaller prompts; provider-analysis prompts receive a safety note that
+  caps reading.
 - Headless approval modes are advisory (see Security).
 - The catalogue is cached for 5 minutes; account model changes can lag.
 - Interrupt sends `SIGINT`, then `SIGKILL` after 3 seconds.

@@ -14,6 +14,12 @@
 
 ### Added
 
+- Tool calls are rendered as Paseo cards (shell, read, write, edit, search, fetch) with
+  running/completed/failed states.
+- A dismissible warning at session start explains that headless Doubao auto-approves tool
+  calls and that Paseo cannot gate them.
+- Provider-analysis prompts receive a safety note that caps reading, so the turn does not
+  run the CLI or this test suite inside itself.
 - `npm run scenarios`: eight end-to-end scenarios — quick answer, news search, file
   write, code reading, multi-turn recall, image generation, long multi-step task and a
   live concurrency probe.

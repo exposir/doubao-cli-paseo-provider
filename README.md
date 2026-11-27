@@ -30,6 +30,7 @@ probing loop, and session resume that uses the id Doubao itself assigned.
 | **Native resume** | The `session_id` from the `system` event is persisted and passed back as `--resume`. |
 | **Dynamic catalogue** | Models, per-model effort levels and defaults come from `doubao model list --output-format json`. No hard-coded names, no locale-dependent parsing. |
 | **Session discovery** | `doubao --list --output-format json` is exposed as Paseo's session list. |
+| **Tool cards** | `tool_use` / `tool_result` become Paseo tool cards (shell, read, write, edit, search, fetch) with running/completed/failed states. |
 | **No global queue** | A long turn never blocks catalogue reads, configuration changes or other sessions. |
 | **Resource guards** | Concurrency cap, turn deadline, stall watchdog, byte caps and a free-disk floor. |
 | **Bounded discovery** | Every probe has a timeout, so a broken CLI cannot hang the provider catalogue. |
@@ -180,7 +181,8 @@ See [docs/TESTING.md](docs/TESTING.md) for the full matrix and environment varia
 
 ### Known limitations
 
-- The timeline is text only; tool calls and diffs are not mapped to Paseo cards.
+- Tool calls render as cards, but their results are text; structured diffs only appear when the CLI returns one.
+- The CLI service can kill a single turn around 90–100 s when one model request gets large. Keep prompts focused or split them; provider-analysis prompts get a safety note that caps reading.
 - Headless permission modes are advisory (see Security).
 - The catalogue is cached for 5 minutes; account model changes can lag.
 - Interrupt sends `SIGINT`, then `SIGKILL` after 3 seconds.

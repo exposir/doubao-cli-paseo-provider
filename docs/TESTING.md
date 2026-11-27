@@ -25,6 +25,7 @@ Four layers, cheapest first. Each layer is independently runnable.
 | `provider.test.ts` | registration, version/launch validation, capability negotiation, catalogue and session-list dispatch, unknown sessions (prompt/configure/close), unnegotiated requests, idempotent close, cache keys, concurrency cap and slot release, catalogue failure fallback, session-list limit clamping |
 | `cli.test.ts` | last-protocol-line extraction over logs, noise and malformed tails |
 | `limits.test.ts` | limit merging, invalid-value fallback, UTF-8-safe truncation, byte-bounded buffers |
+| `tools.test.ts` | tool_use/tool_result extraction, shell/read/edit/search mapping, failed calls |
 | `performance.test.ts` | 20k delta reduction stays linear, and the byte cap does not rescan the answer |
 
 No network, no CLI, safe for CI.

@@ -29,6 +29,7 @@ session id。
 | **原生续聊** | 从 `system` 事件拿到 `session_id` 并持久化，下一轮用 `--resume` 接上。 |
 | **动态目录** | 模型、每个模型的 effort 档位和默认值来自 `doubao model list --output-format json`，不硬编码、不依赖中英文文案。 |
 | **会话发现** | `doubao --list --output-format json` 映射为 Paseo 的会话列表。 |
+| **工具卡片** | `tool_use` / `tool_result` 映射为 Paseo 的 shell、read、write、edit、search 卡片，带 running/completed/failed 状态。 |
 | **无全局队列** | 一个长任务不会阻塞目录读取、配置修改或其它会话。 |
 | **资源护栏** | 并发上限、单轮时限、停滞看门狗、输出字节上限、磁盘余量下限。 |
 | **探测有超时** | CLI 卡死不会拖住 Paseo 的 provider 目录。 |
@@ -175,7 +176,8 @@ npm run scenarios # 日常任务、图片、长任务、并发上限
 
 ### 已知限制
 
-- 时间线只有文本，工具调用和 diff 还没有映射成 Paseo 卡片。
+- 工具调用已经是卡片，但结果是文本；只有 CLI 返回 diff 时才展示结构化 diff。
+- 单个模型请求过大时，CLI 服务会在 90–100 秒左右杀掉整轮。请拆分提示词；分析类的提示会自动附带“少读文件”的安全说明。
 - 无头权限模式是名义上的（见“安全边界”）。
 - 模型目录缓存 5 分钟，账号模型变更会有延迟。
 - 中断先发 `SIGINT`，3 秒后 `SIGKILL`。
