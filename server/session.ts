@@ -328,6 +328,24 @@ export class Session {
       return;
     }
 
+    if (exit.code === null) {
+      const detail = summarizeStderr(stderr.toString());
+      const signal = exit.signal ?? "unknown signal";
+      const hint = signal === "SIGKILL" ? " (possibly OOM or an external kill)" : "";
+      warn(`turn ${turnId} was killed by ${signal} (session ${this.id})`);
+      this.emit({
+        type: "session.turn",
+        sessionId: this.id,
+        turnId,
+        state: "failed",
+        error: {
+          message: `Doubao CLI was killed by ${signal}${hint}${detail ? `: ${detail}` : ""}`,
+          code: `SIGNAL_${signal}`,
+        },
+      });
+      return;
+    }
+
     if (exit.code !== 0) {
       const detail = summarizeStderr(stderr.toString()) || `Doubao CLI exited with code ${exit.code}`;
       this.emit({

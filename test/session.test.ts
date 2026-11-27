@@ -340,6 +340,36 @@ test("a missing binary fails the turn instead of leaving it started", async () =
   assert.equal(failed.error?.code, "SPAWN_ERROR");
 });
 
+test("a process killed by a signal reports the signal", async () => {
+  const cli = fakeCli(
+    [`printf '%s\\n' '{"type":"system","session_id":"sess-1"}'`, `kill -TERM $$`].join("\n"),
+  );
+  const events: ProviderEvent[] = [];
+  const session = createSession(cli, cli.dir, events);
+
+  await session.prompt(prompt());
+
+  const failed = events.find((event) => event.type === "session.turn" && event.state === "failed");
+  assert.ok(failed && failed.type === "session.turn");
+  assert.equal(failed.error?.code, "SIGNAL_SIGTERM");
+  assert.match(failed.error?.message ?? "", /killed by SIGTERM/);
+});
+
+test("SIGKILL mentions the likely causes", async () => {
+  const cli = fakeCli(
+    [`printf '%s\\n' '{"type":"system","session_id":"sess-1"}'`, `kill -KILL $$`].join("\n"),
+  );
+  const events: ProviderEvent[] = [];
+  const session = createSession(cli, cli.dir, events);
+
+  await session.prompt(prompt());
+
+  const failed = events.find((event) => event.type === "session.turn" && event.state === "failed");
+  assert.ok(failed && failed.type === "session.turn");
+  assert.equal(failed.error?.code, "SIGNAL_SIGKILL");
+  assert.match(failed.error?.message ?? "", /OOM|external kill/);
+});
+
 test("interrupting an idle session is a no-op", async () => {
   const cli = fakeCli(HAPPY);
   const events: ProviderEvent[] = [];
