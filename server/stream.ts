@@ -1,6 +1,5 @@
 /**
  * Parser and reducer for `doubao -p ... --output-format stream-json`.
- *
  * The CLI emits one JSON object per line:
  *   {"type":"system","subtype":"init","session_id":"..."}
  *   {"type":"stream_event","session_id":"...","message_id":"...","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"..."}}}
@@ -9,6 +8,8 @@
  *
  * Everything here is pure so it can be unit-tested without the CLI.
  */
+
+import { StringDecoder } from "node:string_decoder";
 
 export interface TurnState {
   sessionId: string | null;
@@ -27,10 +28,13 @@ export function createTurnState(): TurnState {
 }
 
 export class NdjsonParser {
+  private readonly decoder = new StringDecoder("utf8");
   private buffer = "";
 
-  push(chunk: string): unknown[] {
-    this.buffer += chunk;
+  push(chunk: string | Buffer | Uint8Array): unknown[] {
+    // Chunks are byte slices and can split a multi-byte character. Decoding through
+    // StringDecoder keeps the split character intact instead of emitting U+FFFD.
+    this.buffer += typeof chunk === "string" ? chunk : this.decoder.write(Buffer.from(chunk));
     const events: unknown[] = [];
     let newline = this.buffer.indexOf("\n");
     while (newline >= 0) {
@@ -46,6 +50,7 @@ export class NdjsonParser {
   }
 
   end(): unknown[] {
+    this.buffer += this.decoder.end();
     const rest = this.buffer.trim();
     this.buffer = "";
     if (!rest) return [];

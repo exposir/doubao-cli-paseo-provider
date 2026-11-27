@@ -169,7 +169,7 @@ export class Session {
     let stderr = "";
 
     child.stdout?.on("data", (chunk: Buffer) => {
-      for (const event of parser.push(chunk.toString())) {
+      for (const event of parser.push(chunk)) {
         const previousSessionId = state.sessionId;
         applyStreamEvent(state, event);
 
@@ -257,8 +257,10 @@ export class Session {
 
   public async close(): Promise<void> {
     if (this.closed) return;
-    this.closed = true;
+    // Let an in-flight turn report its cancellation before the session is marked closed,
+    // otherwise the terminal turn event would be dropped.
     if (this.activeProcess) await this.interrupt();
+    this.closed = true;
   }
 
   private buildArgs(text: string): string[] {
@@ -305,7 +307,8 @@ export class Session {
   }
 
   private emit(event: ProviderEvent): void {
-    if (this.closed && event.type !== "session.closed") return;
+    // The connection drops events once it is closed; the session itself keeps
+    // reporting terminal turn states so a closing turn is not left "started".
     this.emitEvent(event);
   }
 }

@@ -110,6 +110,11 @@ async function discoverCatalog(
     },
   );
 
+  return buildCatalog(payload);
+}
+
+/** Map a `model list --output-format json` payload to a provider catalogue. */
+export function buildCatalog(payload: Record<string, unknown> | null): ProviderCatalog {
   const models = parseModels(payload);
   if (models.length === 0) return fallbackCatalog();
 
@@ -123,9 +128,7 @@ async function discoverCatalog(
     defaultModel: defaultModel.id,
     defaultMode: DEFAULT_MODE,
     defaultThinkingOption:
-      models.find((model) => model.id === defaultModel.id)?.defaultThinkingOptionId ??
-      thinkingOptions[0]?.id ??
-      "high",
+      defaultModel.defaultThinkingOptionId ?? thinkingOptions[0]?.id ?? "high",
   };
 }
 
@@ -135,9 +138,12 @@ export function parseModels(payload: Record<string, unknown> | null): ProviderMo
   if (!Array.isArray(rawModels)) return [];
 
   const models: ProviderModel[] = [];
+  const seen = new Set<string>();
   for (const raw of rawModels) {
     const model = asRecord(raw) as RawModel | null;
     if (!model || typeof model.id !== "string" || model.id.length === 0) continue;
+    if (seen.has(model.id)) continue;
+    seen.add(model.id);
 
     const efforts = Array.isArray(model.efforts)
       ? model.efforts.filter((effort): effort is string => typeof effort === "string")
