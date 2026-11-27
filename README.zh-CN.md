@@ -68,6 +68,7 @@ npm test          # 单元测试，不需要 CLI
 npm run test:live # 单元测试 + 真实 CLI（会发一条很小的提示词）
 npm run e2e       # 起一个临时 Paseo daemon（随机空闲端口），装插件、跑一轮、
                   # 再追问一轮验证续聊
+npm run e2e:draw  # 完整绘画流程：生成图片、不重画只描述、再画夜景版本
 ```
 
 | 测试文件 | 覆盖内容 |
@@ -81,6 +82,7 @@ npm run e2e       # 起一个临时 Paseo daemon（随机空闲端口），装�
 | `live.test.ts` | 真实 `model list` 与 `--list` |
 | `live-provider.test.ts` | 完整链路：open → prompt → completed → 持久化 |
 | `scripts/e2e.sh` | 临时 Paseo daemon（随机端口）：安装、运行、续聊 |
+| `scripts/e2e-drawing.sh` | 三轮绘画流程：生成、描述、重绘；校验 PNG 魔数、尺寸、体积，并确认第二张图不同 |
 
 ## 已知限制
 

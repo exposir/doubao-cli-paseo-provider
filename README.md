@@ -91,6 +91,8 @@ npm test          # unit tests, no CLI needed
 npm run test:live # unit tests + real CLI (sends one tiny prompt)
 npm run e2e       # throwaway Paseo daemon on a free port, installs the plugin,
                   # runs a turn and a follow-up that proves resume worked
+npm run e2e:draw  # full drawing flow: generate an image, describe it without
+                  # regenerating, then repaint a night version
 ```
 
 Test layout:
@@ -106,6 +108,7 @@ Test layout:
 | `live.test.ts` | real `model list` and `--list` |
 | `live-provider.test.ts` | full provider connection: open → prompt → completed → persistence |
 | `scripts/e2e.sh` | isolated Paseo daemon on a free port: install, run, resume |
+| `scripts/e2e-drawing.sh` | three-turn drawing flow: paint, describe, repaint; checks PNG magic, dimensions, size and that the second image differs |
 
 ## Limitations
 
