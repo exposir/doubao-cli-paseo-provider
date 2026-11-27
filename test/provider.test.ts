@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ProviderEvent, ProviderLaunch } from "@getpaseo/plugin/server/provider";
@@ -462,6 +462,112 @@ test("a finished turn releases the concurrency slot", async () => {
     events.filter((event) => event.type === "session.turn" && event.state === "failed").length,
     0,
   );
+
+  await connection.close();
+});
+
+test("configure on an unknown session reports a failed request", async () => {
+  const { launch } = fakeCli();
+  const registration = createDoubaoProvider();
+  const connection = await registration.connect({
+    versions: [1],
+    capabilities: ["session.configure"],
+    launch,
+  });
+
+  const events: ProviderEvent[] = [];
+  connection.onEvent((event) => events.push(event));
+  await connection.send({
+    type: "session.configure",
+    requestId: "cfg-1",
+    sessionId: "missing",
+    changes: { model: "m2" },
+  });
+  await waitFor(() => events.some((event) => event.type === "request.failed"));
+
+  const failed = events.find((event) => event.type === "request.failed");
+  assert.ok(failed && failed.type === "request.failed");
+  assert.match(failed.error.message, /Unknown session/);
+
+  await connection.close();
+});
+
+test("closing an unknown session still acknowledges the close", async () => {
+  const { launch } = fakeCli();
+  const registration = createDoubaoProvider();
+  const connection = await registration.connect({
+    versions: [1],
+    capabilities: ["prompt.message"],
+    launch,
+  });
+
+  const events: ProviderEvent[] = [];
+  connection.onEvent((event) => events.push(event));
+  await connection.send({ type: "session.close", requestId: "close-1", sessionId: "missing" });
+  await waitFor(() => events.some((event) => event.type === "session.closed"));
+
+  assert.ok(events.some((event) => event.type === "session.closed"));
+  await connection.close();
+});
+
+test("a failing catalogue probe still publishes the fallback catalogue", async () => {
+  clearCatalogCache();
+  const dir = mkdtempSync(join(tmpdir(), "doubao-catfail-"));
+  const command = join(dir, "doubao");
+  writeFileSync(command, "#!/usr/bin/env bash\nexit 1\n");
+  chmodSync(command, 0o755);
+
+  const registration = createDoubaoProvider();
+  const connection = await registration.connect({
+    versions: [1],
+    capabilities: ["prompt.message"],
+    launch: { command, args: [], env: {} },
+  });
+
+  const events: ProviderEvent[] = [];
+  connection.onEvent((event) => events.push(event));
+  await connection.send({ type: "catalog", requestId: "cat-1" });
+  await waitFor(() => events.some((event) => event.type === "catalog"));
+
+  const catalog = events.find((event) => event.type === "catalog");
+  assert.ok(catalog && catalog.type === "catalog");
+  assert.deepEqual(catalog.catalog.models, []);
+  assert.equal(catalog.catalog.modes.length, 3);
+
+  await connection.close();
+});
+
+test("the session list limit is clamped to 1..200", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "doubao-list-"));
+  const command = join(dir, "doubao");
+  writeFileSync(
+    command,
+    `#!/usr/bin/env bash
+if [ "$1" = "--list" ]; then
+  printf '%s\\n' "$*" >> "$(dirname "$0")/list-args.log"
+  printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"result":{"type":"session_list","sessions":[]}}'
+fi
+`,
+  );
+  chmodSync(command, 0o755);
+
+  const registration = createDoubaoProvider();
+  const connection = await registration.connect({
+    versions: [1],
+    capabilities: ["session.list"],
+    launch: { command, args: [], env: {} },
+  });
+
+  const events: ProviderEvent[] = [];
+  connection.onEvent((event) => events.push(event));
+
+  await connection.send({ type: "sessions", requestId: "l-1", limit: 0 });
+  await connection.send({ type: "sessions", requestId: "l-2", limit: 999 });
+  await waitFor(() => events.filter((event) => event.type === "sessions").length === 2);
+
+  const calls = readFileSync(join(dir, "list-args.log"), "utf8").trim().split("\n");
+  assert.match(calls[0], /--limit 1$/);
+  assert.match(calls[1], /--limit 200$/);
 
   await connection.close();
 });

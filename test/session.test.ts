@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type {
   ProviderCatalog,
   ProviderEvent,
+  ProviderPersistence,
   ProviderPrompt,
   ProviderSessionConfig,
 } from "@getpaseo/plugin/server/provider";
@@ -42,6 +43,7 @@ function createSession(
     catalog?: ProviderCatalog;
     config?: Partial<ProviderSessionConfig>;
     limits?: Partial<Limits>;
+    persistence?: ProviderPersistence;
   } = {},
 ): Session {
   return new Session({
@@ -57,6 +59,7 @@ function createSession(
     launch: { command: cli.command, args: [], env: {} },
     catalog: () => options.catalog ?? fallbackCatalog(),
     limits: options.limits,
+    persistence: options.persistence,
     emit: (event) => events.push(event),
   });
 }
@@ -465,4 +468,128 @@ test("a burst of deltas is coalesced into a few timeline updates", async () => {
   assert.ok(updates > 0);
   assert.ok(updates < 32, `expected coalescing, got ${updates} updates`);
   assert.ok(elapsed < 3000, `turn took ${elapsed}ms`);
+});
+
+test("a persisted native id is used on the very first turn", async () => {
+  const cli = fakeCli(HAPPY);
+  const events: ProviderEvent[] = [];
+  const session = createSession(cli, cli.dir, events, {
+    persistence: { version: 1, data: { doubaoSessionId: "restored-42" } },
+  });
+
+  await session.prompt(prompt("hi"));
+
+  assert.match(readFileSync(join(cli.dir, "args.log"), "utf8"), /--resume restored-42/);
+});
+
+test("no session id in the stream means no persistence event", async () => {
+  const cli = fakeCli(
+    `printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"result":{"type":"text","content":"ok"}}'`,
+  );
+  const events: ProviderEvent[] = [];
+  const session = createSession(cli, cli.dir, events);
+
+  await session.prompt(prompt());
+
+  assert.ok(!events.some((event) => event.type === "session.persistence"));
+  assert.ok(events.some((event) => event.type === "session.turn" && event.state === "completed"));
+});
+
+test("configure with null resets to the catalogue defaults", () => {
+  const cli = fakeCli(HAPPY);
+  const events: ProviderEvent[] = [];
+  const session = createSession(cli, cli.dir, events, { catalog: CATALOG });
+
+  session.open("open-1", ["prompt.message", "session.configure"]);
+  session.configure({ model: "m2", mode: "always_allow", thinkingOption: "low" });
+  events.length = 0;
+
+  session.configure({ model: null, mode: null, thinkingOption: null });
+
+  const config = events.at(-1);
+  assert.ok(config && config.type === "session.config");
+  assert.equal(config.config.model, "m1");
+  assert.equal(config.config.thinkingOption, "max");
+  assert.equal(config.config.mode, "ask_risky");
+});
+
+test("the session is usable after an interrupt", async () => {
+  const cli = fakeCli(
+    [
+      `first="$(dirname "$0")/first"`,
+      `if [ ! -f "$first" ]; then`,
+      `  touch "$first"`,
+      `  printf '%s\\n' '{"type":"system","session_id":"sess-1"}'`,
+      `  exec sleep 10`,
+      `fi`,
+      `printf '%s\\n' '{"type":"system","session_id":"sess-1"}'`,
+      `printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"result":{"type":"text","content":"second ok"}}'`,
+    ].join("\n"),
+  );
+  const events: ProviderEvent[] = [];
+  const session = createSession(cli, cli.dir, events);
+
+  const first = session.prompt(prompt("first"));
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  await session.interrupt();
+  await first;
+
+  await session.prompt(prompt("second"));
+
+  assert.ok(events.some((event) => event.type === "session.turn" && event.state === "canceled"));
+  assert.equal(
+    events.filter((event) => event.type === "session.turn" && event.state === "completed").length,
+    1,
+  );
+  assert.match(assistantText(events), /second ok/);
+});
+
+test("close is idempotent", async () => {
+  const cli = fakeCli(HAPPY);
+  const events: ProviderEvent[] = [];
+  const session = createSession(cli, cli.dir, events);
+
+  await session.close();
+  await session.close();
+  assert.equal(session.canStopRuntime(), true);
+});
+
+test("the prompt is passed as one argv entry, never through a shell", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "doubao-argv-"));
+  const command = join(dir, "doubao");
+  writeFileSync(
+    command,
+    `#!/usr/bin/env bash
+{
+  echo "argc=$#"
+  for arg in "$@"; do printf '[%s]\\n' "$arg"; done
+} >> "$(dirname "$0")/argv.log"
+printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"result":{"type":"text","content":"ok"}}'
+`,
+  );
+  chmodSync(command, 0o755);
+
+  const events: ProviderEvent[] = [];
+  const session = createSession({ command, dir }, dir, events);
+  const text = 'a"; rm -rf /tmp/x; echo "b $(whoami) `id`';
+
+  await session.prompt(prompt(text));
+
+  const lines = readFileSync(join(dir, "argv.log"), "utf8").trim().split("\n");
+  // -p <text> --output-format stream-json -C <cwd>
+  assert.equal(lines[0], "argc=6");
+  assert.ok(lines.includes(`[${text}]`));
+});
+
+test("an assistant message over the cap is truncated too", async () => {
+  const cli = fakeCli(
+    `printf '%s\\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"${"y".repeat(200)}"}]}}'`,
+  );
+  const events: ProviderEvent[] = [];
+  const session = createSession(cli, cli.dir, events, { limits: { maxAssistantBytes: 20 } });
+
+  await session.prompt(prompt());
+
+  assert.match(assistantText(events), /output truncated/);
+  assert.ok(Buffer.byteLength(assistantText(events)) < 80);
 });

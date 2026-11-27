@@ -15,14 +15,14 @@ Four layers, cheapest first. Each layer is independently runnable.
 
 | File | Covers |
 | --- | --- |
-| `stream.test.ts` | NDJSON framing across chunk boundaries, CRLF, a multi-byte character split across buffers, delta accumulation, assistant/result precedence, duplicate session ids, non-text deltas, error results, unknown events |
+| `stream.test.ts` | NDJSON framing across chunk boundaries, CRLF, a multi-byte character split across buffers, delta accumulation, assistant/result precedence, duplicate session ids, non-text deltas, error results, subtype-only errors, array content, unknown events |
 | `catalog.test.ts` | model-list mapping, per-model effort levels, duplicate ids, malformed entries, cache keys, TTL/force, single-flight probing, failure fallback |
 | `sessions.test.ts` | `--list` payload mapping, malformed rows, persisted native session ids |
 | `args.test.ts` | CLI argument order for fresh and resumed turns |
 | `prompt.test.ts` | text, image, uploaded file, GitHub and forge PR/issue formatting, review comments, unknown attachment types |
 | `errors.test.ts` | stderr cleanup, truncation boundaries, error codes |
-| `session.test.ts` | session state machine against a fake CLI: happy path, resume args, non-zero exit, result errors, empty prompt, concurrent prompt, interrupt, close during a turn, open/configure events, prompt size cap, timeout, stall watchdog, output caps, burst coalescing |
-| `provider.test.ts` | registration, version/launch validation, capability negotiation, catalogue and session-list dispatch, unknown sessions, unnegotiated requests, idempotent close, cache keys, concurrency cap and slot release |
+| `session.test.ts` | session state machine against a fake CLI: happy path, resume args, restored persistence id, non-zero exit, result errors, empty prompt, concurrent prompt, interrupt and reuse, close during a turn, idempotent close, open/configure events, configure(null) reset, prompt size cap, timeout, stall watchdog, output caps, burst coalescing, argv safety against shell metacharacters |
+| `provider.test.ts` | registration, version/launch validation, capability negotiation, catalogue and session-list dispatch, unknown sessions (prompt/configure/close), unnegotiated requests, idempotent close, cache keys, concurrency cap and slot release, catalogue failure fallback, session-list limit clamping |
 | `cli.test.ts` | last-protocol-line extraction over logs, noise and malformed tails |
 | `limits.test.ts` | limit merging, invalid-value fallback, UTF-8-safe truncation, byte-bounded buffers |
 | `performance.test.ts` | 20k delta reduction stays linear, and the byte cap does not rescan the answer |

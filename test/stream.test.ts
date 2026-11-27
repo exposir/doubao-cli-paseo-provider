@@ -218,3 +218,27 @@ test("text exactly at the cap is not marked as truncated", () => {
   assert.equal(state.truncated, false);
   assert.equal(state.text, "12345");
 });
+
+test("a result error without content falls back to the subtype", () => {
+  const state = createTurnState();
+  const effect = applyStreamEvent(state, {
+    type: "result",
+    is_error: true,
+    subtype: "error_during_execution",
+  });
+
+  assert.equal(effect, "error");
+  assert.equal(state.error, "Doubao CLI error: error_during_execution");
+});
+
+test("result content may be an array of text blocks", () => {
+  const state = createTurnState();
+  applyStreamEvent(state, {
+    type: "result",
+    is_error: false,
+    result: { type: "text", content: [{ type: "text", text: "from array" }] },
+  });
+
+  assert.equal(state.finalText, "from array");
+  assert.equal(state.text, "from array");
+});
