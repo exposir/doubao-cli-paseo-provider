@@ -32,7 +32,9 @@ function warn(message: string): void {
 const SAFETY_NOTE =
   "[Paseo safety note: you are already running inside a Doubao turn. Do not execute " +
   "`doubao`, `paseo`, or this provider's test suite from shell tools; they recurse into " +
-  "the active session and can get the turn killed. Read files and analyze code instead.]";
+  "the active session and can get the turn killed. For repository analysis, read at most " +
+  "4 files, do not inspect git history, node_modules or SDK type definitions, and keep the " +
+  "answer under 400 words.]";
 
 /** Prompts about this provider tempt the model to run the CLI or its tests inside a turn. */
 function withSafetyNote(text: string): string {
