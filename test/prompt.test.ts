@@ -75,3 +75,67 @@ test("command input becomes a slash command", () => {
 test("empty content yields an empty string", () => {
   assert.equal(extractPromptText(message([])), "");
 });
+
+test("forge change requests and forge issues render like their GitHub variants", () => {
+  const text = formatPromptContent([
+    {
+      type: "forge_change_request",
+      mimeType: "application/paseo-forge-change-request",
+      number: 9,
+      title: "Merge request",
+      url: "https://gitlab.example/mr/9",
+      body: "body",
+    },
+    {
+      type: "forge_issue",
+      mimeType: "application/paseo-forge-issue",
+      number: 10,
+      title: "Forge issue",
+      url: "https://gitlab.example/issues/10",
+    },
+  ]);
+
+  assert.match(text, /Pull request #9: Merge request/);
+  assert.match(text, /Issue #10: Forge issue/);
+});
+
+test("review comments list every file and line", () => {
+  const review = {
+    type: "review",
+    mimeType: "application/paseo-review",
+    cwd: "/tmp",
+    mode: "uncommitted",
+    comments: [
+      {
+        filePath: "src/a.ts",
+        side: "new",
+        lineNumber: 3,
+        body: "nit",
+        context: { hunkHeader: "@@", lines: [] },
+      },
+      {
+        filePath: "src/b.ts",
+        side: "old",
+        lineNumber: 8,
+        body: "bug",
+        context: { hunkHeader: "@@", lines: [] },
+      },
+    ],
+  } as unknown as ProviderContent;
+
+  const text = formatPromptContent([review]);
+  assert.match(text, /src\/a\.ts:3 \(new\): nit/);
+  assert.match(text, /src\/b\.ts:8 \(old\): bug/);
+});
+
+test("unknown attachment types are ignored", () => {
+  const text = formatPromptContent([
+    { type: "future_attachment", data: "x" } as unknown as ProviderContent,
+    { type: "text", text: "kept" },
+  ]);
+  assert.equal(text, "kept");
+});
+
+test("a whitespace-only prompt extracts to an empty string", () => {
+  assert.equal(extractPromptText(message([{ type: "text", text: "  \n\t " }])), "");
+});

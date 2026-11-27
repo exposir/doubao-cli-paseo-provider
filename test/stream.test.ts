@@ -85,3 +85,83 @@ test("unknown events keep the learned session id", () => {
   assert.equal(applyStreamEvent(state, { type: "mystery" }), "session");
   assert.equal(state.sessionId, "s1");
 });
+
+test("CRLF line endings are accepted", () => {
+  const parser = new NdjsonParser();
+  const events = parser.push('{"type":"system","session_id":"s1"}\r\n{"type":"result","is_error":false}\r\n');
+  assert.equal(events.length, 2);
+});
+
+test("a multi-byte character split across two buffers is not corrupted", () => {
+  const line = '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"橘猫"}}}\n';
+  const bytes = Buffer.from(line, "utf8");
+  const splitAt = bytes.indexOf(Buffer.from("橘", "utf8")) + 1;
+
+  const parser = new NdjsonParser();
+  const first = parser.push(bytes.subarray(0, splitAt));
+  const second = parser.push(bytes.subarray(splitAt));
+
+  assert.equal(first.length, 0);
+  assert.equal(second.length, 1);
+
+  const state = createTurnState();
+  applyStreamEvent(state, second[0]);
+  assert.equal(state.text, "橘猫");
+});
+
+test("non-object JSON lines are ignored by the reducer", () => {
+  const state = createTurnState();
+  assert.equal(applyStreamEvent(state, 42), "none");
+  assert.equal(applyStreamEvent(state, "text"), "none");
+  assert.equal(applyStreamEvent(state, []), "none");
+  assert.equal(state.text, "");
+});
+
+test("the first session id wins when later events repeat it", () => {
+  const state = createTurnState();
+  applyStreamEvent(state, { type: "system", session_id: "first" });
+  applyStreamEvent(state, { type: "result", session_id: "second", is_error: false });
+  assert.equal(state.sessionId, "first");
+});
+
+test("non-text deltas leave the answer untouched", () => {
+  const state = createTurnState();
+  applyStreamEvent(state, {
+    type: "stream_event",
+    event: { type: "content_block_delta", delta: { type: "thinking_delta", thinking: "hmm" } },
+  });
+  assert.equal(state.text, "");
+});
+
+test("assistant messages concatenate every text block and skip non-text blocks", () => {
+  const state = createTurnState();
+  applyStreamEvent(state, {
+    type: "assistant",
+    message: {
+      content: [
+        { type: "text", text: "first " },
+        { type: "tool_use", id: "t1", name: "bash" },
+        { type: "text", text: "second" },
+      ],
+    },
+  });
+  assert.equal(state.text, "first second");
+});
+
+test("an empty assistant message does not erase streamed text", () => {
+  const state = createTurnState();
+  applyStreamEvent(state, {
+    type: "stream_event",
+    event: { type: "content_block_delta", delta: { type: "text_delta", text: "kept" } },
+  });
+  applyStreamEvent(state, { type: "assistant", message: { content: [] } });
+  assert.equal(state.text, "kept");
+});
+
+test("a result without text still completes the turn", () => {
+  const state = createTurnState();
+  const effect = applyStreamEvent(state, { type: "result", subtype: "success", is_error: false });
+  assert.equal(effect, "done");
+  assert.equal(state.done, true);
+  assert.equal(state.text, "");
+});

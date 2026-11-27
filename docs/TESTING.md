@@ -15,12 +15,15 @@ Four layers, cheapest first. Each layer is independently runnable.
 
 | File | Covers |
 | --- | --- |
-| `stream.test.ts` | NDJSON framing across chunk boundaries, delta accumulation, assistant/result precedence, error results, unknown events |
-| `catalog.test.ts` | model-list mapping, per-model effort levels, malformed entries, cache keys |
-| `sessions.test.ts` | `--list` payload mapping, persisted native session ids |
+| `stream.test.ts` | NDJSON framing across chunk boundaries, CRLF, a multi-byte character split across buffers, delta accumulation, assistant/result precedence, duplicate session ids, non-text deltas, error results, unknown events |
+| `catalog.test.ts` | model-list mapping, per-model effort levels, duplicate ids, malformed entries, cache keys, TTL/force, single-flight probing, failure fallback |
+| `sessions.test.ts` | `--list` payload mapping, malformed rows, persisted native session ids |
 | `args.test.ts` | CLI argument order for fresh and resumed turns |
-| `prompt.test.ts` | text, image, uploaded file, PR, issue formatting |
-| `errors.test.ts` | stderr cleanup, error codes |
+| `prompt.test.ts` | text, image, uploaded file, GitHub and forge PR/issue formatting, review comments, unknown attachment types |
+| `errors.test.ts` | stderr cleanup, truncation boundaries, error codes |
+| `session.test.ts` | session state machine against a fake CLI: happy path, resume args, non-zero exit, result errors, empty prompt, concurrent prompt, interrupt, close during a turn, open/configure events |
+| `provider.test.ts` | registration, version/launch validation, capability negotiation, catalogue and session-list dispatch, unknown sessions, unnegotiated requests, idempotent close, cache keys |
+| `cli.test.ts` | last-protocol-line extraction over logs, noise and malformed tails |
 
 No network, no CLI, safe for CI.
 

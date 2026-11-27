@@ -75,12 +75,15 @@ npm run e2e:draw  # 完整绘画流程：生成图片、不重画只描述、再
 
 | 测试文件 | 覆盖内容 |
 | --- | --- |
-| `stream.test.ts` | NDJSON 拆包、增量累积、assistant/result、错误终态 |
-| `catalog.test.ts` | 模型列表映射、脏数据、缓存键 |
+| `stream.test.ts` | NDJSON 拆包、UTF-8 跨包、重复 session id、增量累积、assistant/result、错误终态 |
+| `catalog.test.ts` | 模型列表映射、脏数据、缓存 TTL、并发合并探测 |
 | `sessions.test.ts` | 会话列表映射、持久化 id |
 | `args.test.ts` | 新会话与续聊的参数顺序 |
-| `prompt.test.ts` | 文本、图片、文件、PR、Issue 格式化 |
+| `prompt.test.ts` | 文本、图片、文件、PR、Issue、Review 格式化 |
 | `errors.test.ts` | stderr 清理与错误码 |
+| `session.test.ts` | 假 CLI 驱动的状态机：续聊、中断、失败、运行中关闭 |
+| `provider.test.ts` | 注册、能力协商、请求分发、缓存键 |
+| `cli.test.ts` | 协议行提取（跳过日志与坏行） |
 | `live.test.ts` | 真实 `model list` 与 `--list` |
 | `live-provider.test.ts` | 完整链路：open → prompt → completed → 持久化 |
 | `scripts/e2e.sh` | 临时 Paseo daemon（随机端口）：安装、运行、续聊 |

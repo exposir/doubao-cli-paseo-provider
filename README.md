@@ -102,12 +102,15 @@ Test layout:
 
 | Suite | Covers |
 | --- | --- |
-| `stream.test.ts` | NDJSON framing, delta accumulation, assistant/result events, error results |
-| `catalog.test.ts` | model-list mapping, malformed entries, cache keys |
+| `stream.test.ts` | NDJSON framing, split UTF-8, duplicate session ids, delta accumulation, assistant/result events, error results |
+| `catalog.test.ts` | model-list mapping, malformed entries, cache TTL, single-flight probing |
 | `sessions.test.ts` | session-list mapping, persisted native ids |
 | `args.test.ts` | CLI argument order for fresh and resumed turns |
-| `prompt.test.ts` | text, image, file, PR, issue formatting |
+| `prompt.test.ts` | text, image, file, PR, issue, review formatting |
 | `errors.test.ts` | stderr cleanup and error codes |
+| `session.test.ts` | state machine against a fake CLI: resume, interrupts, failures, close during a turn |
+| `provider.test.ts` | registration, capability negotiation, dispatch, cache keys |
+| `cli.test.ts` | last-protocol-line extraction |
 | `live.test.ts` | real `model list` and `--list` |
 | `live-provider.test.ts` | full provider connection: open → prompt → completed → persistence |
 | `scripts/e2e.sh` | isolated Paseo daemon on a free port: install, run, resume |

@@ -51,3 +51,47 @@ test("readPersistedSessionId reads the stored native id", () => {
   assert.equal(readPersistedSessionId(undefined), null);
   assert.equal(readPersistedSessionId({ data: { doubaoSessionId: 7 } }), null);
 });
+
+test("a non-array sessions field yields an empty list", () => {
+  assert.deepEqual(parseSessionList({ result: { sessions: "nope" } }, "/tmp"), []);
+  assert.deepEqual(parseSessionList({ result: { sessions: {} } }, "/tmp"), []);
+});
+
+test("an empty session id is skipped", () => {
+  const sessions = parseSessionList(
+    { result: { sessions: [{ session_id: "" }, { session_id: "ok" }] } },
+    "/tmp",
+  );
+  assert.equal(sessions.length, 1);
+});
+
+test("wrongly typed metadata is dropped instead of copied", () => {
+  const sessions = parseSessionList(
+    {
+      result: {
+        sessions: [
+          { session_id: "s1", title: 42, updated_at: false, cwd: 7 },
+        ],
+      },
+    },
+    "/fallback",
+  );
+
+  assert.equal(sessions[0].title, undefined);
+  assert.equal(sessions[0].updatedAt, undefined);
+  assert.equal(sessions[0].cwd, "/fallback");
+});
+
+test("a session cwd from the CLI wins over the fallback", () => {
+  const sessions = parseSessionList(
+    { result: { sessions: [{ session_id: "s1", cwd: "/from/cli" }] } },
+    "/fallback",
+  );
+  assert.equal(sessions[0].cwd, "/from/cli");
+});
+
+test("readPersistedSessionId tolerates non-object data", () => {
+  assert.equal(readPersistedSessionId({ data: null }), null);
+  assert.equal(readPersistedSessionId({ data: ["doubaoSessionId"] }), null);
+  assert.equal(readPersistedSessionId({ data: "123" }), null);
+});
