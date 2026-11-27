@@ -1,6 +1,8 @@
 import { execCommand, spawnProcess, terminateProcess } from "@getpaseo/plugin/server";
 import { createHash } from "node:crypto";
-import { readdirSync, readFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ChildProcess } from "node:child_process";
 import type { ProviderLaunch } from "@getpaseo/plugin/server/provider";
 
@@ -18,13 +20,69 @@ const CHILD_MARKER = `paseo-${createHash("sha256")
   .digest("hex")
   .slice(0, 12)}`;
 
-export function childEnv(env: Readonly<Record<string, string | undefined>>): Record<string, string> {
+const guardDir = join(
+  tmpdir(),
+  `paseo-doubao-guard-${typeof process.getuid === "function" ? process.getuid() : "user"}`,
+);
+let guardReady = false;
+
+export function childEnv(
+  env: Readonly<Record<string, string | undefined>>,
+  realCommand = "/usr/local/bin/doubao",
+): Record<string, string> {
   const merged: Record<string, string> = {};
   for (const [key, value] of Object.entries(env)) {
     if (value !== undefined) merged[key] = value;
   }
   merged[CHILD_ENV_KEY] = CHILD_MARKER;
+  merged.DOUBAO_PASEO_REAL_BIN = realCommand;
+
+  if (process.env.DOUBAO_PASEO_ALLOW_NESTED !== "1") {
+    const guard = ensureNestedGuard();
+    if (guard) {
+      const path =
+        merged.PATH ??
+        process.env.PATH ??
+        "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+      merged.PATH = `${guard}:${path}`;
+    }
+  }
+
   return merged;
+}
+
+/**
+ * `doubao` inside a turn's tool shell would attach to the same conversation and
+ * deadlock the active turn. A shim on PATH fails those calls fast while leaving
+ * introspection (`--help`, `model list`, `--list`) working.
+ */
+function ensureNestedGuard(): string {
+  if (guardReady) return guardDir;
+  try {
+    mkdirSync(guardDir, { recursive: true });
+    const shim = join(guardDir, "doubao");
+    writeFileSync(
+      shim,
+      `#!/bin/sh
+real="\${DOUBAO_PASEO_REAL_BIN:-/usr/local/bin/doubao}"
+for arg in "$@"; do
+  case "$arg" in
+    -p|--resume)
+      echo "doubao: nested turn invocation is blocked by the Paseo provider." >&2
+      echo "doubao: set DOUBAO_PASEO_ALLOW_NESTED=1 before starting the daemon to allow it." >&2
+      exit 64
+      ;;
+  esac
+done
+exec "$real" "$@"
+`,
+    );
+    chmodSync(shim, 0o755);
+    guardReady = true;
+    return guardDir;
+  } catch {
+    return "";
+  }
 }
 
 /**
@@ -145,7 +203,7 @@ export function spawnTurn(
   return trackChild(
     spawnProcess(launch.command, launchArgs(launch, args), {
       cwd,
-      env: childEnv(launch.env),
+      env: childEnv(launch.env, launch.command),
       stdio: ["ignore", "pipe", "pipe"],
     }),
   );

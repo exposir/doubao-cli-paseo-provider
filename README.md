@@ -140,6 +140,13 @@ If you need isolation, run the daemon or the workspace in a container, a sandbox
 dedicated user. Do not point this provider at a directory where unattended writes are
 unacceptable.
 
+### Nested turns
+
+A turn's tool shell sees a `doubao` shim on `PATH`: `-p` and `--resume` fail fast with exit 64
+instead of attaching to the active conversation and deadlocking the turn. Introspection
+(`--help`, `--version`, `model list`, `--list`) still reaches the real binary. Set
+`DOUBAO_PASEO_ALLOW_NESTED=1` before starting the daemon to disable the shim.
+
 ## Development
 
 ```bash

@@ -136,6 +136,12 @@ export DOUBAO_PASEO_MIN_FREE_DISK_MB=1024
 需要隔离时，把 daemon 或工作区放进容器、沙箱或独立用户下运行；不要把它指向不能接受无人值守
 写入的目录。
 
+### 嵌套调用
+
+每一轮的工具 shell 里，`doubao` 会被一个 shim 接管：`-p` 和 `--resume` 会立即以退出码 64
+失败，而不是接入当前会话把这一轮卡死。`--help`、`--version`、`model list`、`--list` 仍然
+透传到真实二进制。启动 daemon 前设置 `DOUBAO_PASEO_ALLOW_NESTED=1` 可以关闭这个 shim。
+
 ## 开发
 
 ```bash
