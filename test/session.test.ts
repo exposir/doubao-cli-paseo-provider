@@ -493,6 +493,84 @@ test("assistant output is capped and marked", async () => {
   );
 });
 
+test("tool calls become timeline items with running and completed states", async () => {
+  const cli = fakeCli(
+    [
+      `printf '%s\\n' '{"type":"system","session_id":"sess-1"}'`,
+      `printf '%s\\n' '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"echo hi"}}]}}'`,
+      `printf '%s\\n' '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","is_error":false,"content":[{"type":"text","text":"exited with code 0. stdout: hi"}]}]}}'`,
+      `printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"result":{"type":"text","content":"done"}}'`,
+    ].join("\n"),
+  );
+  const events: ProviderEvent[] = [];
+  const session = createSession(cli, cli.dir, events);
+
+  await session.prompt(prompt());
+
+  const tools = events
+    .filter((event) => event.type === "timeline.item" && event.item.type === "tool_call")
+    .map((event) => (event.type === "timeline.item" && event.item.type === "tool_call" ? event.item : null))
+    .filter((item): item is NonNullable<typeof item> => item !== null);
+
+  assert.equal(tools.length, 2);
+  assert.equal(tools[0].id, "tool:t1");
+  assert.equal(tools[0].status, "running");
+  assert.equal(tools[1].status, "completed");
+  assert.equal(tools[1].detail.type, "shell");
+  if (tools[1].detail.type === "shell") {
+    assert.equal(tools[1].detail.command, "echo hi");
+    assert.equal(tools[1].detail.exitCode, 0);
+  }
+});
+
+test("open warns that tool calls cannot be gated", () => {
+  const cli = fakeCli(HAPPY);
+  const events: ProviderEvent[] = [];
+  const session = createSession(cli, cli.dir, events);
+
+  session.open("open-1", ["prompt.message"]);
+
+  const notice = events.find((event) => event.type === "session.notice");
+  assert.ok(notice && notice.type === "session.notice");
+  assert.equal(notice.notice.severity, "warning");
+  assert.match(notice.notice.title, /approval/i);
+});
+
+test("the approval notice can be suppressed for controlled environments", () => {
+  process.env.DOUBAO_PASEO_SUPPRESS_NOTICES = "1";
+  try {
+    const cli = fakeCli(HAPPY);
+    const events: ProviderEvent[] = [];
+    const session = createSession(cli, cli.dir, events);
+    session.open("open-1", ["prompt.message"]);
+    assert.ok(!events.some((event) => event.type === "session.notice"));
+  } finally {
+    delete process.env.DOUBAO_PASEO_SUPPRESS_NOTICES;
+  }
+});
+test("prompts about the provider carry a safety note", async () => {
+  const cli = fakeCli(HAPPY);
+  const events: ProviderEvent[] = [];
+  const session = createSession(cli, cli.dir, events);
+
+  await session.prompt(prompt("分析下这个 doubao Provider"));
+
+  const call = readFileSync(join(cli.dir, "args.log"), "utf8");
+  assert.match(call, /Paseo safety note/);
+  assert.match(call, /Do not execute/);
+});
+
+test("ordinary prompts do not carry the safety note", async () => {
+  const cli = fakeCli(HAPPY);
+  const events: ProviderEvent[] = [];
+  const session = createSession(cli, cli.dir, events);
+
+  await session.prompt(prompt("今天有哪些新闻"));
+
+  const call = readFileSync(join(cli.dir, "args.log"), "utf8");
+  assert.doesNotMatch(call, /Paseo safety note/);
+});
+
 test("a prompt exactly at the cap is accepted", async () => {
   const cli = fakeCli(HAPPY);
   const events: ProviderEvent[] = [];

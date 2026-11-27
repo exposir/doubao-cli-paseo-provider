@@ -14,6 +14,7 @@ import { spawnTurn, stopProcess } from "./cli.js";
 import { DoubaoError, summarizeStderr } from "./errors.js";
 import { BoundedText, freeDiskBytes, resolveLimits, type Limits } from "./limits.js";
 import { extractPromptText } from "./prompt.js";
+import { buildToolItem, extractToolEvents, type ToolCall, type ToolResult } from "./tools.js";
 import { readPersistedSessionId } from "./sessions.js";
 import { NdjsonParser, applyStreamEvent, createTurnState, type TurnState } from "./stream.js";
 
@@ -26,6 +27,16 @@ const TEXT_FLUSH_MAX_IDLE_MS = 500;
 
 function warn(message: string): void {
   console.warn(`[doubao-provider] ${message}`);
+}
+
+const SAFETY_NOTE =
+  "[Paseo safety note: you are already running inside a Doubao turn. Do not execute " +
+  "`doubao`, `paseo`, or this provider's test suite from shell tools; they recurse into " +
+  "the active session and can get the turn killed. Read files and analyze code instead.]";
+
+/** Prompts about this provider tempt the model to run the CLI or its tests inside a turn. */
+function withSafetyNote(text: string): string {
+  return /doubao|paseo|provider|测试|npm test/i.test(text) ? `${SAFETY_NOTE}\n\n${text}` : text;
 }
 
 export interface SessionOptions {
@@ -54,6 +65,7 @@ export class Session {
 
   private turn: TurnState | null = null;
   private turnId: string | null = null;
+  private readonly toolCalls = new Map<string, ToolCall>();
   private flushTimer: NodeJS.Timeout | null = null;
   private lastEmittedBytes = 0;
   private lastEmitAt = 0;
@@ -104,6 +116,20 @@ export class Session {
       ],
     });
 
+    if (process.env.DOUBAO_PASEO_SUPPRESS_NOTICES !== "1") {
+      this.emit({
+        type: "session.notice",
+        sessionId: this.id,
+        notice: {
+          id: "headless-approvals",
+          severity: "warning",
+          title: "Doubao runs without an approval gate",
+          description:
+            "Tool calls execute in headless mode regardless of --permission-mode; Paseo cannot approve or deny them. Run the daemon or workspace in a container or under a dedicated user if you need isolation.",
+        },
+      });
+    }
+
     this.emit({ type: "session.ready", requestId, sessionId: this.id });
   }
 
@@ -149,7 +175,8 @@ export class Session {
     const text = extractPromptText(prompt);
     if (!text) throw new DoubaoError("Prompt is empty", "EMPTY_PROMPT");
 
-    const promptBytes = Buffer.byteLength(text);
+    const outbound = withSafetyNote(text);
+    const promptBytes = Buffer.byteLength(outbound);
     if (this.limits.maxPromptBytes > 0 && promptBytes > this.limits.maxPromptBytes) {
       throw new DoubaoError(
         `Prompt is ${promptBytes} bytes; the limit is ${this.limits.maxPromptBytes}`,
@@ -175,6 +202,7 @@ export class Session {
     this.interrupted = false;
     this.lastEmittedBytes = 0;
     this.lastEmitAt = 0;
+    this.toolCalls.clear();
 
     const state = createTurnState();
     this.turn = state;
@@ -199,7 +227,7 @@ export class Session {
 
     this.emit({ type: "session.turn", sessionId: this.id, turnId, state: "started" });
 
-    const child = spawnTurn(this.launch, this.buildArgs(text), this.config.cwd);
+    const child = spawnTurn(this.launch, this.buildArgs(outbound), this.config.cwd);
     this.activeProcess = child;
 
     const parser = new NdjsonParser();
@@ -241,6 +269,16 @@ export class Session {
 
         if (state.sessionId && state.sessionId !== previousSessionId) {
           this.rememberSessionId(state.sessionId);
+        }
+
+        for (const toolEvent of extractToolEvents(event)) {
+          if (toolEvent.kind === "call") {
+            this.toolCalls.set(toolEvent.callId, toolEvent);
+            this.emitTool(toolEvent);
+          } else {
+            const call = this.toolCalls.get(toolEvent.callId);
+            if (call) this.emitTool(call, toolEvent);
+          }
         }
 
         // Comparing byte counters keeps this O(1) per event; comparing the whole
@@ -398,6 +436,14 @@ export class Session {
       model: this.config.model,
       thinkingOption: this.config.thinkingOption,
       mode: this.config.mode,
+    });
+  }
+
+  private emitTool(call: ToolCall, result?: ToolResult): void {
+    this.emit({
+      type: "timeline.item",
+      sessionId: this.id,
+      item: buildToolItem(call, result),
     });
   }
 
