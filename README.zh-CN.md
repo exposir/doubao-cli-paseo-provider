@@ -1,89 +1,70 @@
-# doubao-cli-paseo-provider
+<div align="center">
+  <img src="icon.png" width="112" alt="Doubao CLI provider for Paseo">
+  <h1>doubao-cli-paseo-provider</h1>
+  <p><strong>在 Paseo 里使用豆包 CLI</strong>：流式输出、原生会话续聊、模型列表从 CLI 自动发现。</p>
+  <p>
+    <a href="https://github.com/exposir/doubao-cli-paseo-provider/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/exposir/doubao-cli-paseo-provider/actions/workflows/ci.yml/badge.svg"></a>
+    <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg">
+    <img alt="Node >= 22" src="https://img.shields.io/badge/node-%3E%3D22-5fa04e.svg">
+    <img alt="Paseo >= 0.15" src="https://img.shields.io/badge/paseo-%3E%3D0.15-6f42c1.svg">
+  </p>
+  <p><a href="README.md">English</a> · <a href="docs/PRODUCTION.md">生产说明</a> · <a href="docs/TESTING.md">测试文档</a></p>
+</div>
 
-把字节官方的 [豆包 CLI](https://www.npmjs.com/package/@bytedance/doubao-cli)（`doubao`）接入
-[Paseo](https://paseo.sh) 的 Provider 插件。
+---
 
-## 为什么不用 ACP
+## 为什么做这个
 
-`doubao` 虽然有 ACP 模式，但无头场景真正好用的是它的 `--output-format stream-json`：
+Paseo 没有内置豆包 Provider。豆包 CLI 虽然有 ACP 模式，但真正适合无头编排的是
+`--output-format stream-json`：文本增量、最终消息、原生 session id、终态结果，全在同一条流里。
 
-- 文本增量
-- 最终的 assistant 消息
-- 原生 session id
-- 终态 result
-
-这些都在同一条流里。插件直接消费这条流，所以每轮只起一个进程，没有 ACP 握手和反复探测，
-会话续接也更准确。
+这个插件直接消费这条流：每轮只起一个进程，没有 ACP 握手和反复探测，续聊用的是豆包自己分配的
+session id。
 
 ## 特性
 
-- **流式输出**：`stream_event` 的增量会合并成一条持续增长的 assistant 消息
-- **原生续聊**：从 `system` 事件拿到 `session_id` 并持久化，下一轮用 `--resume` 接上
-- **动态目录**：模型、每个模型的 effort 档位、默认档位全部来自
-  `doubao model list --output-format json`，不硬编码模型名，也不依赖中英文文案
-- **会话发现**：`doubao --list --output-format json` 映射为 Paseo 的会话列表
-- **探测有超时**：CLI 卡死不会拖住 Paseo 的 provider 目录
-- **没有全局队列**：一个长任务不会阻塞目录读取、配置修改和其它会话
-
-## 资源护栏
-
-目标是让 daemon 不被失控的 agent 拖死。以下限制都在 provider 内部强制执行：
-
-| 限制 | 默认值 | 触发后的行为 |
-| --- | --- | --- |
-| `maxConcurrentTurns` | 2 | 多余请求直接失败 `TOO_MANY_TURNS`，不再多起一个约 150MB 的进程 |
-| `maxTurnMs` | 30 分钟 | 本轮被终止，失败码 `TURN_TIMEOUT` |
-| `stallTimeoutMs` | 5 分钟 | 长时间无输出则终止，失败码 `TURN_STALLED` |
-| `maxAssistantBytes` | 4 MiB | 在 UTF-8 边界截断并标记 `[output truncated]` |
-| `maxStderrBytes` | 64 KiB | 错误详情截断并标记 `[truncated]` |
-| `maxPromptBytes` | 1 MiB | 启动前拒绝，错误码 `PROMPT_TOO_LARGE` |
-| `minFreeDiskBytes` | 512 MiB | 空间不足时拒绝本轮，错误码 `DISK_LOW` |
-
-所有限制都可以用环境变量调整，不需要改代码：
-
-| 环境变量 | 对应限制 |
+| | |
 | --- | --- |
-| `DOUBAO_PASEO_MAX_TURNS` | `maxConcurrentTurns` |
-| `DOUBAO_PASEO_MAX_TURN_MS` | `maxTurnMs` |
-| `DOUBAO_PASEO_STALL_MS` | `stallTimeoutMs` |
-| `DOUBAO_PASEO_MAX_TEXT_BYTES` | `maxAssistantBytes` |
-| `DOUBAO_PASEO_MAX_STDERR_BYTES` | `maxStderrBytes` |
-| `DOUBAO_PASEO_MAX_PROMPT_BYTES` | `maxPromptBytes` |
-| `DOUBAO_PASEO_MIN_FREE_DISK_MB` | `minFreeDiskBytes` |
+| **流式输出** | `stream_event` 增量合并为少量时间线更新，而不是每个 token 一条。 |
+| **原生续聊** | 从 `system` 事件拿到 `session_id` 并持久化，下一轮用 `--resume` 接上。 |
+| **动态目录** | 模型、每个模型的 effort 档位和默认值来自 `doubao model list --output-format json`，不硬编码、不依赖中英文文案。 |
+| **会话发现** | `doubao --list --output-format json` 映射为 Paseo 的会话列表。 |
+| **无全局队列** | 一个长任务不会阻塞目录读取、配置修改或其它会话。 |
+| **资源护栏** | 并发上限、单轮时限、停滞看门狗、输出字节上限、磁盘余量下限。 |
+| **探测有超时** | CLI 卡死不会拖住 Paseo 的 provider 目录。 |
+| **干净退出** | 子进程被登记、退出时回收；daemon 被硬杀后，下次启动会扫掉残留。 |
 
-另外：
+## 工作原理
 
-- 所有探测命令（`model list`、`--list`、`auth status`）都有超时；
-- 所有子进程都被登记，daemon 退出时会收到 `SIGKILL`，重启不会留下进程和临时文件；
-- 中断先发 `SIGINT`，宽限期后 `SIGKILL`。
-
-默认值偏保守，需要调整时在代码里传：
-
-```ts
-createDoubaoProvider({ limits: { maxConcurrentTurns: 1, maxTurnMs: 10 * 60_000 } });
+```mermaid
+flowchart LR
+    A[Paseo 客户端] -->|WebSocket| B[Paseo daemon]
+    B --> C[豆包 provider 插件]
+    C -->|每轮拉起| D[doubao CLI]
+    D -->|stdout 上的 stream-json| C
+    C -->|时间线事件| B
+    B --> A
 ```
 
-## 安全边界
+每轮就是一个 CLI 进程：
 
-插件不提供沙箱。无头 `-p` 模式下，CLI 会自动放行工具调用，无论 `--permission-mode` 是什么：
-实测 `ask_risky` 和 `ask_always` 都在没有确认的情况下直接写文件（doubao 2.38.4，无 TTY）。
-这个参数只是透传，Paseo 不负责审批。
-
-需要隔离时，把 daemon 或 workspace 放进容器、沙箱或独立用户下运行；不要把它指向不能接受
-无人值守写入的目录。
+```bash
+doubao --resume <原生id> -p "<提示词>" --output-format stream-json \
+       -C <工作区> --model <模型id> --effort <档位> --permission-mode <模式>
+```
 
 ## 前置要求
 
 | 项 | 版本 |
 | --- | --- |
-| Paseo | >= 0.15.0 |
+| Paseo | >= 0.15.0（已对 0.15.0 和 0.17.6 做类型检查） |
 | Node | >= 22 |
 | 豆包 CLI | 已安装并登录（`doubao auth status` 退出码为 0） |
 
 ## 安装
 
 ```bash
-git clone https://github.com/Angboo/doubao-cli-paseo-provider.git
+git clone https://github.com/exposir/doubao-cli-paseo-provider.git
 cd doubao-cli-paseo-provider
 npm install
 paseo plugin install .
@@ -99,51 +80,116 @@ paseo run --provider doubao "只回复：PONG"
 ## 使用
 
 ```bash
+# 单次任务
 paseo run --provider doubao "解释一下这个仓库的架构"
-paseo run --provider doubao --model person-deepseek-v4-1-flash-261017 --thinking max "重构数据层"
-paseo send <agent-id> "给这次改动补单元测试"
+
+# 指定模型和推理档位
+paseo run --provider doubao --model <模型id> --thinking max "重构数据层"
+
+# 继续已有 agent
+paseo send <agent-id> "给这次改动补测试"
 ```
 
-模型 id 和 effort 档位以你账号下 CLI 返回的为准。
+模型 id 和档位以你账号下 CLI 返回的为准：
 
-## 开发与测试
+```bash
+doubao model list --output-format json
+```
 
-完整的测试分层、环境变量和排错表见 [docs/TESTING.md](docs/TESTING.md)。
+## 资源护栏
+
+所有限制都在 provider 内强制执行，避免失控任务拖垮 daemon 的内存或主机的磁盘。
+
+| 限制 | 默认 | 触发后 |
+| --- | --- | --- |
+| `maxConcurrentTurns` | 2 | 拒绝新请求，`TOO_MANY_TURNS` |
+| `maxTurnMs` | 30 分钟 | 终止本轮，`TURN_TIMEOUT` |
+| `stallTimeoutMs` | 5 分钟 | 无输出则终止，`TURN_STALLED` |
+| `maxAssistantBytes` | 4 MiB | 在 UTF-8 边界截断并标记 |
+| `maxStderrBytes` | 64 KiB | 错误详情截断并标记 |
+| `maxPromptBytes` | 1 MiB | 启动前拒绝，`PROMPT_TOO_LARGE` |
+| `minFreeDiskBytes` | 512 MiB | 拒绝本轮，`DISK_LOW` |
+
+无需重新构建即可调整：
+
+```bash
+export DOUBAO_PASEO_MAX_TURNS=1
+export DOUBAO_PASEO_MIN_FREE_DISK_MB=1024
+```
+
+| 环境变量 | 对应限制 |
+| --- | --- |
+| `DOUBAO_PASEO_MAX_TURNS` | `maxConcurrentTurns` |
+| `DOUBAO_PASEO_MAX_TURN_MS` | `maxTurnMs` |
+| `DOUBAO_PASEO_STALL_MS` | `stallTimeoutMs` |
+| `DOUBAO_PASEO_MAX_TEXT_BYTES` | `maxAssistantBytes` |
+| `DOUBAO_PASEO_MAX_STDERR_BYTES` | `maxStderrBytes` |
+| `DOUBAO_PASEO_MAX_PROMPT_BYTES` | `maxPromptBytes` |
+| `DOUBAO_PASEO_MIN_FREE_DISK_MB` | `minFreeDiskBytes` |
+
+## 安全边界
+
+插件不提供沙箱。无头 `-p` 模式下，CLI 会自动放行工具调用，无论 `--permission-mode` 是什么：
+实测 `ask_risky` 和 `ask_always` 都在没有确认的情况下直接写文件（doubao 2.38.4，无 TTY）。
+该参数只是透传，Paseo 不负责审批。
+
+需要隔离时，把 daemon 或工作区放进容器、沙箱或独立用户下运行；不要把它指向不能接受无人值守
+写入的目录。
+
+## 开发
 
 ```bash
 npm install
 npm run typecheck
 npm test          # 单元测试，不需要 CLI
-npm run test:live # 单元测试 + 真实 CLI（会发一条很小的提示词）
-npm run e2e       # 起一个临时 Paseo daemon（随机空闲端口），装插件、跑一轮、
-                  # 再追问一轮验证续聊
-npm run e2e:draw  # 完整绘画流程：生成图片、不重画只描述、再画夜景版本
-npm run soak      # 20 轮真实任务：RSS 增长、孤儿进程、重启后续聊
+npm run test:live # 单元测试 + 真实 CLI（一次很短的任务）
+npm run e2e       # 临时 daemon：安装、运行、续聊
+npm run e2e:draw  # 三轮绘画流程
+npm run soak      # 20 轮真实任务：RSS、孤儿进程、重启续聊
 ```
 
-| 测试文件 | 覆盖内容 |
+| 测试 | 覆盖 |
 | --- | --- |
-| `stream.test.ts` | NDJSON 拆包、UTF-8 跨包、重复 session id、增量累积、assistant/result、错误终态 |
-| `catalog.test.ts` | 模型列表映射、脏数据、缓存 TTL、并发合并探测 |
-| `sessions.test.ts` | 会话列表映射、持久化 id |
+| `stream.test.ts` | NDJSON 拆包、CRLF、UTF-8 跨包、增量、result 优先级、截断 |
+| `catalog.test.ts` | 模型列表映射、重复 id、TTL、并发合并、失败回退 |
+| `sessions.test.ts` | `--list` 映射、持久化 id |
 | `args.test.ts` | 新会话与续聊的参数顺序 |
-| `prompt.test.ts` | 文本、图片、文件、PR、Issue、Review 格式化 |
-| `errors.test.ts` | stderr 清理与错误码 |
-| `session.test.ts` | 假 CLI 驱动的状态机：续聊、中断、失败、运行中关闭 |
-| `provider.test.ts` | 注册、能力协商、请求分发、缓存键 |
-| `cli.test.ts` | 协议行提取（跳过日志与坏行） |
-| `live.test.ts` | 真实 `model list` 与 `--list` |
-| `live-provider.test.ts` | 完整链路：open → prompt → completed → 持久化 |
-| `scripts/e2e.sh` | 临时 Paseo daemon（随机端口）：安装、运行、续聊 |
-| `scripts/e2e-drawing.sh` | 三轮绘画流程：生成、描述、重绘；校验 PNG 魔数、尺寸、体积，并确认第二张图不同 |
+| `prompt.test.ts` | 文本、图片、文件、PR/Issue、Review 格式化 |
+| `errors.test.ts` | stderr 清理、错误码 |
+| `session.test.ts` | 假 CLI 驱动的状态机：续聊、中断、超时、关闭 |
+| `provider.test.ts` | 注册、能力协商、分发、并发、异常分支 |
+| `cli.test.ts` | 协议行提取 |
+| `limits.test.ts` | 环境变量、非法值、UTF-8 截断 |
+| `performance.test.ts` | 2 万 delta 保持线性 |
+| `reaper.test.ts` | 只回收带标记的孤儿进程 |
 
-## 已知限制
+完整矩阵和环境变量见 [docs/TESTING.md](docs/TESTING.md)。
 
-- 时间线目前只有文本，工具调用还没有映射成 Paseo 的工具卡片
-- 附件会转成可读的上下文块，不会把二进制内容传给 CLI
-- `--permission-mode` 会透传，但无头的 `-p` 模式无法交互审批，不要把它当成硬性审批闸门
-- 中断先发 `SIGINT`，宽限期后 `SIGKILL`
+## 兼容性与状态
+
+- Paseo 插件 SDK：对 **0.15.0** 和 **0.17.6** 做类型检查；daemon E2E 在 **0.17.6**。
+- 豆包 CLI：**2.38.4**。
+- Soak：**20 轮**，daemon RSS 平稳（峰值 166 MB，增长 0 MB），零残留进程，重启后仍能续聊。
+- 中断：真实图片任务中途停止，豆包进程清零，agent 回到 idle。
+
+### 已知限制
+
+- 时间线只有文本，工具调用和 diff 还没有映射成 Paseo 卡片。
+- 无头权限模式是名义上的（见“安全边界”）。
+- 模型目录缓存 5 分钟，账号模型变更会有延迟。
+- 中断先发 `SIGINT`，3 秒后 `SIGKILL`。
+
+## 排错
+
+| 现象 | 原因 | 处理 |
+| --- | --- | --- |
+| `plugin ls` 显示 `disabled` | 插件全局关闭 | 配置 `pluginsEnabled: true` |
+| `Expected a relative path to a PNG` | 图标用了 SVG | 指向 `icon.png`（`node scripts/make-icon.mjs`） |
+| `Unrecognized key: "listen"` | 配置层级错误 | 应为 `daemon.listen` |
+| 续聊丢上下文 | 原生 id 没持久化 | 检查是否出现 `session.persistence` 事件 |
+| `Workspace not found` | 工作区 id 过期 | 在新项目里用 `--new-workspace local` |
+| 报 `DISK_LOW` | 低于磁盘余量下限 | 清理空间或调低 `DOUBAO_PASEO_MIN_FREE_DISK_MB` |
 
 ## 许可证
 
-MIT
+[MIT](LICENSE)

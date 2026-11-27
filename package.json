@@ -34,5 +34,24 @@
     "@getpaseo/plugin": "0.17.6",
     "@types/node": "^22.10.0",
     "typescript": "^5.9.3"
-  }
+  },
+  "license": "MIT",
+  "author": "exposir",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/exposir/doubao-cli-paseo-provider.git"
+  },
+  "homepage": "https://github.com/exposir/doubao-cli-paseo-provider",
+  "bugs": {
+    "url": "https://github.com/exposir/doubao-cli-paseo-provider/issues"
+  },
+  "keywords": [
+    "paseo",
+    "paseo-plugin",
+    "doubao",
+    "doubao-cli",
+    "agent",
+    "provider",
+    "stream-json"
+  ]
 }
