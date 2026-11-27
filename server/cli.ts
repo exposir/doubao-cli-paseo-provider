@@ -38,6 +38,15 @@ export function childEnv(
   merged.DOUBAO_PASEO_REAL_BIN = realCommand;
 
   if (process.env.DOUBAO_PASEO_ALLOW_NESTED !== "1") {
+    // The CLI's sandbox rebuilds PATH, so a PATH shim alone is not reliable.
+    // An exported bash function shadows the command regardless of PATH order.
+    merged["BASH_FUNC_doubao%%"] =
+      '() { for arg in "$@"; do case "$arg" in -p|--resume) ' +
+      'echo "doubao: nested turn invocation is blocked by the Paseo provider." >&2; ' +
+      'echo "doubao: set DOUBAO_PASEO_ALLOW_NESTED=1 before starting the daemon to allow it." >&2; ' +
+      'return 64;; esac; done; ' +
+      'command "${DOUBAO_PASEO_REAL_BIN:-/usr/local/bin/doubao}" "$@"; }';
+
     const guard = ensureNestedGuard();
     if (guard) {
       const path =
