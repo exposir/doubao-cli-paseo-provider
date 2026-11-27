@@ -1,0 +1,102 @@
+# Testing
+
+Four layers, cheapest first. Each layer is independently runnable.
+
+| Layer | Command | Needs CLI | Needs login | Model calls |
+| --- | --- | --- | --- | --- |
+| Unit | `npm test` | no | no | 0 |
+| Live CLI | `npm run test:live` | yes | yes | 0 (discovery only) |
+| Daemon E2E | `npm run e2e` | yes | yes | 2 text turns |
+| Drawing E2E | `npm run e2e:draw` | yes | yes | 2 image turns + 1 text turn |
+
+## Unit
+
+`npm test` compiles with `tsc` and runs `node --test` over `dist/test/`.
+
+| File | Covers |
+| --- | --- |
+| `stream.test.ts` | NDJSON framing across chunk boundaries, delta accumulation, assistant/result precedence, error results, unknown events |
+| `catalog.test.ts` | model-list mapping, per-model effort levels, malformed entries, cache keys |
+| `sessions.test.ts` | `--list` payload mapping, persisted native session ids |
+| `args.test.ts` | CLI argument order for fresh and resumed turns |
+| `prompt.test.ts` | text, image, uploaded file, PR, issue formatting |
+| `errors.test.ts` | stderr cleanup, error codes |
+
+No network, no CLI, safe for CI.
+
+## Live CLI
+
+`npm run test:live` adds the tests gated by `DOUBAO_LIVE=1`:
+
+- `live.test.ts` — real `doubao model list --output-format json` and `doubao --list --output-format json`
+- `live-provider.test.ts` — opens a provider connection in-process, sends one prompt, waits for `session.turn: completed`, asserts the assistant text and that `session.persistence` fired
+
+These need a logged-in CLI (`doubao auth status` exits 0). They cost one tiny model call.
+
+## Daemon E2E
+
+`scripts/e2e.sh` starts a **throwaway Paseo daemon** on a free port with its own home, installs the plugin from the repo, and drives it through the real CLI:
+
+1. daemon start and plugin reaches `running`
+2. `doubao` provider registers
+3. one agent turn produces the expected answer
+4. a follow-up proves the native session was resumed
+
+The temporary home is removed on exit. Its config is the minimum Paseo needs:
+
+```json
+{
+  "version": 1,
+  "daemon": {
+    "listen": "127.0.0.1:<free port>",
+    "relay": { "enabled": false }
+  },
+  "pluginsEnabled": true,
+  "agents": { "providers": {} },
+  "features": {}
+}
+```
+
+Two details that are easy to miss:
+
+- `pluginsEnabled` must be `true`, or the plugin installs but stays `disabled`.
+- `paseo-plugin.json` `icon` must point at a **PNG**; Paseo rejects an SVG path.
+
+## Drawing E2E
+
+`scripts/e2e-drawing.sh` is the long flow:
+
+1. starts the isolated daemon and installs the plugin
+2. **paint** — asks for an image saved to an absolute path, then asserts:
+   - file exists
+   - PNG magic bytes
+   - width ≥ 512
+   - size ≥ 100 KB
+3. **describe** — asks the agent to describe the image *without repainting*; the answer must mention the cat and the warm/sunset palette, which proves `--resume` kept the context
+4. **repaint** — asks for a night version; asserts the second file is a valid PNG and has a different SHA-256 from the first
+5. asserts all three prompts are present in the timeline
+
+Artifacts are copied to `/tmp/doubao-drawing-artifacts` before cleanup.
+
+### Environment variables
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `PASEO_E2E_KEEP` | `0` | `1` keeps the temporary home (daemon logs, workspace) |
+| `PASEO_DRAW_ARTIFACTS` | `/tmp/doubao-drawing-artifacts` | where the two PNGs are copied |
+| `PASEO_E2E_EXPECT` | `E2E-OK` | expected string in the basic e2e |
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| `plugin ls` shows `disabled` | plugins are globally off | set `pluginsEnabled: true` in the home config and restart the daemon |
+| `Expected a relative path to a PNG` | manifest points at an SVG | point `icon` at a PNG (`node scripts/make-icon.mjs` regenerates one) |
+| `Unrecognized key: "listen"` | wrong config nesting | the key is `daemon.listen`, not a top-level `listen` |
+| Follow-up loses context | native session id was not persisted | check the turn emitted `session.persistence`; run `npm run test:live` |
+| `paseo run` says `Workspace not found` | the daemon knows a stale workspace id | use `--new-workspace local` in a fresh project directory |
+| e2e times out | image turns can take ~60s each | raise the `timeout` around `paseo run` / `paseo send` |
+
+## Cost and time
+
+Unit tests run in about a second. The live provider test takes ~5–10s and one short completion. The drawing flow takes roughly 1.5–3 minutes because it generates two images.

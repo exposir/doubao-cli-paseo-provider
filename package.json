@@ -15,7 +15,10 @@
     "server/",
     "README.md",
     "README.zh-CN.md",
-    "LICENSE"
+    "LICENSE",
+    "scripts/",
+    "docs/",
+    "tsconfig.json"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",

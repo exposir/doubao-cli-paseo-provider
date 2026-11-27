@@ -84,6 +84,9 @@ overrides use Paseo's normal provider configuration:
 
 ## Development
 
+See [docs/TESTING.md](docs/TESTING.md) for the full test matrix, environment variables and
+troubleshooting.
+
 ```bash
 npm install
 npm run typecheck

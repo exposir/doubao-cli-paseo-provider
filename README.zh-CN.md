@@ -61,6 +61,8 @@ paseo send <agent-id> "给这次改动补单元测试"
 
 ## 开发与测试
 
+完整的测试分层、环境变量和排错表见 [docs/TESTING.md](docs/TESTING.md)。
+
 ```bash
 npm install
 npm run typecheck
