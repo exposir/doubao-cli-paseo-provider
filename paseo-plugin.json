@@ -1,0 +1,9 @@
+{
+  "id": "doubao-cli-paseo",
+  "name": "Doubao CLI",
+  "description": "Doubao coding agent provider for Paseo, built on the official doubao CLI",
+  "icon": "icon.svg",
+  "requirements": {
+    "paseo": ">=0.15.0"
+  }
+}

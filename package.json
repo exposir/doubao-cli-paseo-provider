@@ -1,0 +1,30 @@
+{
+  "name": "doubao-cli-paseo-provider",
+  "version": "0.1.0",
+  "description": "Doubao CLI provider plugin for Paseo: streaming turns, resume, dynamic model catalogue",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "files": [
+    "paseo-plugin.json",
+    "icon.svg",
+    "index.server.ts",
+    "server/",
+    "README.md",
+    "README.zh-CN.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsc -p tsconfig.json && node --test dist/test/*.test.js",
+    "test:live": "tsc -p tsconfig.json && DOUBAO_LIVE=1 node --test dist/test/*.test.js"
+  },
+  "devDependencies": {
+    "@getpaseo/plugin": "0.17.6",
+    "@types/node": "^22.10.0",
+    "typescript": "^5.9.3"
+  }
+}
