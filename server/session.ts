@@ -19,6 +19,10 @@ import { NdjsonParser, applyStreamEvent, createTurnState, type TurnState } from 
 
 /** Coalesce token deltas so the timeline does not get one event per token. */
 const TEXT_FLUSH_INTERVAL_MS = 80;
+/** Emit once this many bytes accumulated, even if the interval is short. */
+const TEXT_FLUSH_MIN_BYTES = 256;
+/** But never let a slow trickle wait longer than this. */
+const TEXT_FLUSH_MAX_IDLE_MS = 500;
 
 export interface SessionOptions {
   id: string;
@@ -47,7 +51,8 @@ export class Session {
   private turn: TurnState | null = null;
   private turnId: string | null = null;
   private flushTimer: NodeJS.Timeout | null = null;
-  private lastEmittedText = "";
+  private lastEmittedBytes = 0;
+  private lastEmitAt = 0;
 
   constructor(options: SessionOptions) {
     this.id = options.id;
@@ -149,7 +154,8 @@ export class Session {
     const turnId = randomUUID();
     this.turnId = turnId;
     this.interrupted = false;
-    this.lastEmittedText = "";
+    this.lastEmittedBytes = 0;
+    this.lastEmitAt = 0;
 
     const state = createTurnState();
     this.turn = state;
@@ -186,11 +192,16 @@ export class Session {
 
     const armStallTimer = () => {
       if (this.limits.stallTimeoutMs <= 0) return;
-      if (stallTimer) clearTimeout(stallTimer);
-      stallTimer = setTimeout(() => {
-        stopReason = "stall";
-        void stopProcess(child);
-      }, this.limits.stallTimeoutMs);
+      if (!stallTimer) {
+        stallTimer = setTimeout(() => {
+          stallTimer = null;
+          stopReason = "stall";
+          void stopProcess(child);
+        }, this.limits.stallTimeoutMs);
+      } else {
+        // refresh() resets the deadline without allocating a new timer on every chunk.
+        stallTimer.refresh();
+      }
     };
 
     if (this.limits.maxTurnMs > 0) {
@@ -205,13 +216,17 @@ export class Session {
       armStallTimer();
       for (const event of parser.push(chunk)) {
         const previousSessionId = state.sessionId;
-        applyStreamEvent(state, event, { maxTextBytes: this.limits.maxAssistantBytes });
+        const effect = applyStreamEvent(state, event, {
+          maxTextBytes: this.limits.maxAssistantBytes,
+        });
 
         if (state.sessionId && state.sessionId !== previousSessionId) {
           this.rememberSessionId(state.sessionId);
         }
 
-        if (state.text !== this.lastEmittedText) this.scheduleFlush();
+        // Comparing byte counters keeps this O(1) per event; comparing the whole
+        // accumulated string here would be O(n) per token.
+        if (effect === "text") this.scheduleFlush();
       }
     });
 
@@ -354,6 +369,8 @@ export class Session {
     this.flushTimer = setTimeout(() => {
       this.flushTimer = null;
       this.flushText(false);
+      // Keep a slow trickle moving: flushText emits once the idle window passes.
+      if (this.turn && this.turn.byteLength > this.lastEmittedBytes) this.scheduleFlush();
     }, TEXT_FLUSH_INTERVAL_MS);
   }
 
@@ -361,10 +378,17 @@ export class Session {
     const state = this.turn;
     const turnId = this.turnId;
     if (!state || !turnId) return;
-    if (!state.text || state.text === this.lastEmittedText) return;
-    if (!force && state.text.length - this.lastEmittedText.length < 1) return;
 
-    this.lastEmittedText = state.text;
+    const grown = state.byteLength - this.lastEmittedBytes;
+    if (grown <= 0) return;
+
+    if (!force && grown < TEXT_FLUSH_MIN_BYTES) {
+      const idle = Date.now() - this.lastEmitAt;
+      if (idle < TEXT_FLUSH_MAX_IDLE_MS) return;
+    }
+
+    this.lastEmittedBytes = state.byteLength;
+    this.lastEmitAt = Date.now();
     this.emit({
       type: "timeline.item",
       sessionId: this.id,

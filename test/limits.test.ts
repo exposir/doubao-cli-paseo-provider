@@ -9,6 +9,18 @@ test("resolveLimits merges overrides over the defaults", () => {
   assert.equal(limits.maxStderrBytes, DEFAULT_LIMITS.maxStderrBytes);
 });
 
+test("resolveLimits rejects negative, NaN and infinite values", () => {
+  const limits = resolveLimits({
+    maxConcurrentTurns: -1,
+    maxTurnMs: Number.NaN,
+    maxPromptBytes: Number.POSITIVE_INFINITY,
+  });
+
+  assert.equal(limits.maxConcurrentTurns, DEFAULT_LIMITS.maxConcurrentTurns);
+  assert.equal(limits.maxTurnMs, DEFAULT_LIMITS.maxTurnMs);
+  assert.equal(limits.maxPromptBytes, DEFAULT_LIMITS.maxPromptBytes);
+});
+
 test("truncateUtf8 leaves short text alone", () => {
   assert.equal(truncateUtf8("橘猫", 100), "橘猫");
 });

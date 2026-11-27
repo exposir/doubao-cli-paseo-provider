@@ -21,12 +21,27 @@ Four layers, cheapest first. Each layer is independently runnable.
 | `args.test.ts` | CLI argument order for fresh and resumed turns |
 | `prompt.test.ts` | text, image, uploaded file, GitHub and forge PR/issue formatting, review comments, unknown attachment types |
 | `errors.test.ts` | stderr cleanup, truncation boundaries, error codes |
-| `session.test.ts` | session state machine against a fake CLI: happy path, resume args, non-zero exit, result errors, empty prompt, concurrent prompt, interrupt, close during a turn, open/configure events, prompt size cap, timeout, stall watchdog, output caps |
-| `provider.test.ts` | registration, version/launch validation, capability negotiation, catalogue and session-list dispatch, unknown sessions, unnegotiated requests, idempotent close, cache keys, concurrency cap |
+| `session.test.ts` | session state machine against a fake CLI: happy path, resume args, non-zero exit, result errors, empty prompt, concurrent prompt, interrupt, close during a turn, open/configure events, prompt size cap, timeout, stall watchdog, output caps, burst coalescing |
+| `provider.test.ts` | registration, version/launch validation, capability negotiation, catalogue and session-list dispatch, unknown sessions, unnegotiated requests, idempotent close, cache keys, concurrency cap and slot release |
 | `cli.test.ts` | last-protocol-line extraction over logs, noise and malformed tails |
-| `limits.test.ts` | limit merging, UTF-8-safe truncation, byte-bounded buffers |
+| `limits.test.ts` | limit merging, invalid-value fallback, UTF-8-safe truncation, byte-bounded buffers |
+| `performance.test.ts` | 20k delta reduction stays linear, and the byte cap does not rescan the answer |
 
 No network, no CLI, safe for CI.
+
+## Performance
+
+The guards sit on the hot path, so each check is O(chunk), never O(answer):
+
+- byte length is tracked incrementally; the cap check never re-scans accumulated text;
+- timeline updates are coalesced: 80 ms tick, 256-byte growth floor, 500 ms idle ceiling;
+- the stall watchdog uses `timer.refresh()` instead of allocating a timer per chunk;
+- stderr is byte-bounded as it is appended;
+- comparing the accumulated answer (O(n)) was removed from the per-token path in favour of
+  comparing byte counters.
+
+`test/performance.test.ts` reduces 20,000 deltas (320 KB) in ~30 ms on the development host, and
+the capped variant in ~15 ms. A 2,000-delta burst produces fewer than 32 timeline updates.
 
 ## Live CLI
 

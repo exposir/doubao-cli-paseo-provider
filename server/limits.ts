@@ -27,7 +27,20 @@ export const DEFAULT_LIMITS: Limits = {
 };
 
 export function resolveLimits(partial: Partial<Limits> = {}): Limits {
-  return { ...DEFAULT_LIMITS, ...partial };
+  const merged = { ...DEFAULT_LIMITS, ...partial };
+  return {
+    maxConcurrentTurns: sanitize(merged.maxConcurrentTurns, DEFAULT_LIMITS.maxConcurrentTurns),
+    maxTurnMs: sanitize(merged.maxTurnMs, DEFAULT_LIMITS.maxTurnMs),
+    stallTimeoutMs: sanitize(merged.stallTimeoutMs, DEFAULT_LIMITS.stallTimeoutMs),
+    maxAssistantBytes: sanitize(merged.maxAssistantBytes, DEFAULT_LIMITS.maxAssistantBytes),
+    maxStderrBytes: sanitize(merged.maxStderrBytes, DEFAULT_LIMITS.maxStderrBytes),
+    maxPromptBytes: sanitize(merged.maxPromptBytes, DEFAULT_LIMITS.maxPromptBytes),
+  };
+}
+
+/** Negative, NaN or infinite limits silently disable a guard; fall back instead. */
+function sanitize(value: number, fallback: number): number {
+  return Number.isFinite(value) && value >= 0 ? Math.floor(value) : fallback;
 }
 
 /** Cut a string at a byte boundary without leaving a broken UTF-8 tail. */

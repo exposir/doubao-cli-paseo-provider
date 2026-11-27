@@ -429,3 +429,40 @@ test("assistant output is capped and marked", async () => {
     events.some((event) => event.type === "session.turn" && event.state === "completed"),
   );
 });
+
+test("a prompt exactly at the cap is accepted", async () => {
+  const cli = fakeCli(HAPPY);
+  const events: ProviderEvent[] = [];
+  const session = createSession(cli, cli.dir, events, { limits: { maxPromptBytes: 5 } });
+
+  await session.prompt(prompt("hello"));
+
+  assert.equal(existsSync(join(cli.dir, "args.log")), true);
+  assert.ok(events.some((event) => event.type === "session.turn" && event.state === "completed"));
+});
+
+test("a burst of deltas is coalesced into a few timeline updates", async () => {
+  const cli = fakeCli(
+    [
+      `printf '%s\\n' '{"type":"system","session_id":"sess-1"}'`,
+      `for i in {1..2000}; do printf '%s\\n' '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"xxxxxxxxxxxxxxxx"}}}'; done`,
+      `printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"result":{"type":"text","content":"done"}}'`,
+    ].join("\n"),
+  );
+  const events: ProviderEvent[] = [];
+  const session = createSession(cli, cli.dir, events, {
+    limits: { maxAssistantBytes: 8 * 1024 * 1024 },
+  });
+
+  const started = Date.now();
+  await session.prompt(prompt());
+  const elapsed = Date.now() - started;
+
+  const updates = events.filter(
+    (event) => event.type === "timeline.item" && event.item.type === "assistant_message",
+  ).length;
+
+  assert.ok(updates > 0);
+  assert.ok(updates < 32, `expected coalescing, got ${updates} updates`);
+  assert.ok(elapsed < 3000, `turn took ${elapsed}ms`);
+});

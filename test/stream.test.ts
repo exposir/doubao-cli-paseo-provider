@@ -206,3 +206,15 @@ test("the result payload is bounded as well", () => {
   assert.equal(state.truncated, true);
   assert.ok(state.finalText && Buffer.byteLength(state.finalText) < 60);
 });
+
+test("text exactly at the cap is not marked as truncated", () => {
+  const state = createTurnState();
+  applyStreamEvent(
+    state,
+    { type: "assistant", message: { content: [{ type: "text", text: "12345" }] } },
+    { maxTextBytes: 5 },
+  );
+
+  assert.equal(state.truncated, false);
+  assert.equal(state.text, "12345");
+});

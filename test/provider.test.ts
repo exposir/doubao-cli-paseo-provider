@@ -417,3 +417,51 @@ test("concurrent turns are capped per connection", async () => {
 
   await connection.close();
 });
+
+test("a finished turn releases the concurrency slot", async () => {
+  clearCatalogCache();
+  const { launch, dir } = promptCli();
+  const registration = createDoubaoProvider({ limits: { maxConcurrentTurns: 1 } });
+  const connection = await registration.connect({
+    versions: [1],
+    capabilities: ["prompt.message"],
+    launch,
+  });
+
+  const events: ProviderEvent[] = [];
+  connection.onEvent((event) => events.push(event));
+
+  await connection.send({
+    type: "session.open",
+    requestId: "open-1",
+    sessionId: "s-1",
+    history: "skip",
+    config: { cwd: dir, env: {}, mcpServers: {}, settings: {}, persist: false },
+  });
+  await waitFor(() => events.some((event) => event.type === "session.ready"));
+
+  for (let index = 0; index < 2; index += 1) {
+    await connection.send({
+      type: "session.prompt",
+      sessionId: "s-1",
+      prompt: {
+        clientMessageId: `c-${index}`,
+        delivery: "auto",
+        input: { type: "message", content: [{ type: "text", text: "hi" }] },
+      },
+    });
+    const expected = index + 1;
+    await waitFor(
+      () =>
+        events.filter((event) => event.type === "session.turn" && event.state === "completed")
+          .length === expected,
+    );
+  }
+
+  assert.equal(
+    events.filter((event) => event.type === "session.turn" && event.state === "failed").length,
+    0,
+  );
+
+  await connection.close();
+});
