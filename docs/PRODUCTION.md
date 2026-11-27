@@ -56,9 +56,6 @@ to `0` disables that guard.
 - Spawned turns carry a per-home marker (`PASEO_DOUBAO_CHILD`). On startup the plugin
   sweeps `/proc` for that marker, so children left by a `SIGKILL`ed daemon are cleaned
   up on the next start. Manual `doubao` sessions are untouched.
-- A `doubao` shim on the turn's `PATH` blocks nested `-p` / `--resume` calls (exit 64)
-  so an agent cannot attach to its own conversation and deadlock. Set
-  `DOUBAO_PASEO_ALLOW_NESTED=1` to opt out.
 
 ## Observability
 
