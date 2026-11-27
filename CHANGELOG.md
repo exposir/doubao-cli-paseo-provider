@@ -11,6 +11,9 @@
 - The concurrency cap is global. Paseo opens one provider connection per agent, so the
   previous per-connection counter never limited real concurrency.
 - `npm test` cleans `dist` first, so deleted tests cannot run from stale build output.
+- A non-zero CLI exit also drops the native session id, not just signal deaths.
+- Prompts are checked against the CLI's 262,144 code point limit, not only the byte cap.
+- Tool output is capped at 64 KiB per card so a huge command cannot bloat the daemon.
 
 ### Added
 
@@ -20,6 +23,8 @@
   calls and that Paseo cannot gate them.
 - Provider-analysis prompts receive a safety note that caps reading, so the turn does not
   run the CLI or this test suite inside itself.
+- Recursive `doubao -p/--resume` and `paseo run/send/...` tool calls are blocked at tool-call
+  time; the card is marked canceled and the turn stops with a warning.
 - `npm run scenarios`: eight end-to-end scenarios — quick answer, news search, file
   write, code reading, multi-turn recall, image generation, long multi-step task and a
   live concurrency probe.

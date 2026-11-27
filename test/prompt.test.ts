@@ -1,7 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { ProviderContent, ProviderPrompt } from "@getpaseo/plugin/server/provider";
-import { extractPromptText, formatPromptContent } from "../server/prompt.js";
+import {
+  MAX_PROMPT_CODE_POINTS,
+  countCodePoints,
+  extractPromptText,
+  formatPromptContent,
+} from "../server/prompt.js";
 
 function message(content: ProviderContent[]): ProviderPrompt {
   return {
@@ -138,4 +143,9 @@ test("unknown attachment types are ignored", () => {
 
 test("a whitespace-only prompt extracts to an empty string", () => {
   assert.equal(extractPromptText(message([{ type: "text", text: "  \n\t " }])), "");
+});
+
+test("code points are counted the way the CLI counts them", () => {
+  assert.equal(countCodePoints("橘猫"), 2);
+  assert.equal(countCodePoints("a".repeat(MAX_PROMPT_CODE_POINTS)), MAX_PROMPT_CODE_POINTS);
 });

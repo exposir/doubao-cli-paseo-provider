@@ -124,3 +124,18 @@ test("read, edit, search and unknown tools map to typed details", () => {
   });
   assert.equal(unknown.detail.type, "unknown");
 });
+
+test("huge tool output is truncated before it reaches the timeline", () => {
+  const item = buildToolItem(bashCall, {
+    kind: "result",
+    callId: "t1",
+    isError: false,
+    output: "x".repeat(100 * 1024),
+  });
+
+  assert.equal(item.status, "completed");
+  if (item.detail.type === "shell") {
+    assert.match(item.detail.output ?? "", /\[truncated\]/);
+    assert.ok(Buffer.byteLength(item.detail.output ?? "") < 70 * 1024);
+  }
+});

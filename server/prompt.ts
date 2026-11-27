@@ -65,3 +65,12 @@ export function extractPromptText(prompt: ProviderPrompt): string {
   }
   return formatPromptContent(prompt.input.content);
 }
+
+/** The CLI rejects a final prompt above 262,144 Unicode code points. */
+export const MAX_PROMPT_CODE_POINTS = 262_144;
+
+export function countCodePoints(text: string): number {
+  let count = 0;
+  for (const _ of text) count += 1;
+  return count;
+}

@@ -141,6 +141,10 @@ If you need isolation, run the daemon or the workspace in a container, a sandbox
 dedicated user. Do not point this provider at a directory where unattended writes are
 unacceptable.
 
+Shell commands that would start another Doubao or Paseo turn (`doubao -p`, `doubao --resume`,
+`paseo run/send/...`) are detected when the tool call starts: the card is marked canceled and the
+turn stops with a warning instead of deadlocking.
+
 ## Development
 
 ```bash

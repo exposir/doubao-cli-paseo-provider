@@ -13,7 +13,11 @@ import { buildTurnArgs } from "./args.js";
 import { spawnTurn, stopProcess } from "./cli.js";
 import { DoubaoError, summarizeStderr } from "./errors.js";
 import { BoundedText, freeDiskBytes, resolveLimits, type Limits } from "./limits.js";
-import { extractPromptText } from "./prompt.js";
+import {
+  countCodePoints,
+  extractPromptText,
+  MAX_PROMPT_CODE_POINTS,
+} from "./prompt.js";
 import { buildToolItem, extractToolEvents, type ToolCall, type ToolResult } from "./tools.js";
 import { readPersistedSessionId } from "./sessions.js";
 import { NdjsonParser, applyStreamEvent, createTurnState, type TurnState } from "./stream.js";
@@ -39,6 +43,22 @@ const SAFETY_NOTE =
 /** Prompts about this provider tempt the model to run the CLI or its tests inside a turn. */
 function withSafetyNote(text: string): string {
   return /doubao|paseo|provider|测试|npm test/i.test(text) ? `${SAFETY_NOTE}\n\n${text}` : text;
+}
+
+const RECURSIVE_COMMANDS = [
+  /(?:^|[;&|]\s*)(?:\S*\/)?doubao\s+(?:-p|--resume)\b/,
+  /(?:^|[;&|]\s*)(?:\S*\/)?paseo\s+(?:run|send|stop|daemon|plugin)\b/,
+];
+
+/** Detect a tool command that would start a Doubao/Paseo turn inside this one. */
+function recursiveCommand(call: ToolCall): string | null {
+  if (!/bash|shell|exec/i.test(call.name)) return null;
+  const command = typeof call.input.command === "string" ? call.input.command : "";
+  for (const pattern of RECURSIVE_COMMANDS) {
+    const match = command.match(pattern);
+    if (match) return match[0].trim();
+  }
+  return null;
 }
 
 export interface SessionOptions {
@@ -178,6 +198,14 @@ export class Session {
     if (!text) throw new DoubaoError("Prompt is empty", "EMPTY_PROMPT");
 
     const outbound = withSafetyNote(text);
+    const promptChars = countCodePoints(outbound);
+    if (promptChars > MAX_PROMPT_CODE_POINTS) {
+      throw new DoubaoError(
+        `Prompt is ${promptChars} code points; the limit is ${MAX_PROMPT_CODE_POINTS}`,
+        "PROMPT_TOO_LARGE",
+      );
+    }
+
     const promptBytes = Buffer.byteLength(outbound);
     if (this.limits.maxPromptBytes > 0 && promptBytes > this.limits.maxPromptBytes) {
       throw new DoubaoError(
@@ -277,6 +305,23 @@ export class Session {
           if (toolEvent.kind === "call") {
             this.toolCalls.set(toolEvent.callId, toolEvent);
             this.emitTool(toolEvent);
+
+            const blocked = recursiveCommand(toolEvent);
+            if (blocked) {
+              warn(`blocked recursive command in ${this.id}: ${blocked}`);
+              this.emit({
+                type: "timeline.item",
+                sessionId: this.id,
+                item: {
+                  id: `notice:recursive:${turnId}`,
+                  type: "notification",
+                  level: "warning",
+                  message: `Blocked a recursive command: ${blocked}. A Doubao turn cannot run doubao or paseo inside itself.`,
+                },
+              });
+              this.cancelTool(toolEvent);
+              void this.interrupt();
+            }
           } else {
             const call = this.toolCalls.get(toolEvent.callId);
             if (call) this.emitTool(call, toolEvent);
@@ -373,7 +418,10 @@ export class Session {
     if (exit.code === null) {
       const detail = summarizeStderr(stderr.toString());
       const signal = exit.signal ?? "unknown signal";
-      const hint = signal === "SIGKILL" ? " (possibly OOM or an external kill)" : "";
+      const hint =
+        signal === "SIGKILL"
+          ? " (possibly OOM, an external kill, or a request past the CLI service limit; split long analysis prompts)"
+          : "";
       warn(`turn ${turnId} was killed by ${signal} (session ${this.id})`);
       this.forgetSessionId();
       this.emit({
@@ -391,6 +439,7 @@ export class Session {
 
     if (exit.code !== 0) {
       const detail = summarizeStderr(stderr.toString()) || `Doubao CLI exited with code ${exit.code}`;
+      this.forgetSessionId();
       this.emit({
         type: "session.turn",
         sessionId: this.id,
@@ -446,6 +495,15 @@ export class Session {
       type: "timeline.item",
       sessionId: this.id,
       item: buildToolItem(call, result),
+    });
+  }
+
+  private cancelTool(call: ToolCall): void {
+    const item = buildToolItem(call);
+    this.emit({
+      type: "timeline.item",
+      sessionId: this.id,
+      item: { ...item, status: "canceled", error: null },
     });
   }
 

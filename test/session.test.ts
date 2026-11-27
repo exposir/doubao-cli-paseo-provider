@@ -156,6 +156,12 @@ test("a non-zero exit becomes a failed turn with the stderr text", async () => {
   assert.ok(failed && failed.type === "session.turn");
   assert.equal(failed.error?.code, "EXIT_3");
   assert.match(failed.error?.message ?? "", /boom: bad arguments/);
+
+  const cleared = events
+    .filter((event) => event.type === "session.persistence")
+    .at(-1);
+  assert.ok(cleared && cleared.type === "session.persistence");
+  assert.deepEqual(cleared.persistence.data, { doubaoSessionId: null });
 });
 
 test("a result event with is_error fails the turn even when the process exits 0", async () => {
@@ -521,6 +527,45 @@ test("tool calls become timeline items with running and completed states", async
     assert.equal(tools[1].detail.command, "echo hi");
     assert.equal(tools[1].detail.exitCode, 0);
   }
+});
+
+test("a recursive doubao command is blocked and the turn is canceled", async () => {
+  const cli = fakeCli(
+    [
+      `printf '%s\n' '{"type":"system","session_id":"sess-1"}'`,
+      `printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"doubao -p hi"}}]}}'`,
+      `exec sleep 10`,
+    ].join("\n"),
+  );
+  const events: ProviderEvent[] = [];
+  const session = createSession(cli, cli.dir, events);
+
+  await session.prompt(prompt());
+
+  assert.ok(
+    events.some(
+      (event) =>
+        event.type === "timeline.item" &&
+        event.item.type === "notification" &&
+        /Blocked a recursive command/.test(event.item.message),
+    ),
+  );
+
+  const tool = events
+    .filter((event) => event.type === "timeline.item" && event.item.type === "tool_call")
+    .at(-1);
+  assert.ok(tool && tool.type === "timeline.item" && tool.item.type === "tool_call");
+  assert.equal(tool.item.status, "canceled");
+  assert.ok(events.some((event) => event.type === "session.turn" && event.state === "canceled"));
+});
+
+test("a prompt above the CLI code point limit is rejected", async () => {
+  const cli = fakeCli(HAPPY);
+  const events: ProviderEvent[] = [];
+  const session = createSession(cli, cli.dir, events);
+
+  await assert.rejects(session.prompt(prompt("a".repeat(262_145))), /code points/);
+  assert.equal(existsSync(join(cli.dir, "args.log")), false);
 });
 
 test("open warns that tool calls cannot be gated", () => {

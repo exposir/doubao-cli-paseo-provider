@@ -2,6 +2,9 @@ import type {
   ProviderTimelineItem,
   ProviderToolCallDetail,
 } from "@getpaseo/plugin/server/provider";
+import { truncateUtf8 } from "./limits.js";
+
+const MAX_TOOL_OUTPUT_BYTES = 64 * 1024;
 
 type ToolCallItem = Extract<ProviderTimelineItem, { type: "tool_call" }>;
 
@@ -91,7 +94,7 @@ function toolDetail(
   result?: ToolResult,
 ): ProviderToolCallDetail {
   const key = name.toLowerCase();
-  const output = result?.output;
+  const output = capOutput(result?.output);
   const filePath = str(input.file_path) ?? str(input.path) ?? str(input.filePath);
 
   if (key.includes("bash") || key.includes("shell") || key.includes("exec")) {
@@ -112,7 +115,7 @@ function toolDetail(
     return {
       type: "write",
       filePath: filePath ?? "",
-      content: str(input.content) ?? str(input.file_text),
+      content: capOutput(str(input.content) ?? str(input.file_text)),
     };
   }
 
@@ -120,8 +123,8 @@ function toolDetail(
     return {
       type: "edit",
       filePath: filePath ?? "",
-      oldString: str(input.old_string) ?? str(input.old_str),
-      newString: str(input.new_string) ?? str(input.new_str),
+      oldString: capOutput(str(input.old_string) ?? str(input.old_str)),
+      newString: capOutput(str(input.new_string) ?? str(input.new_str)),
       unifiedDiff: looksLikeDiff(output) ? output : undefined,
     };
   }
@@ -142,6 +145,11 @@ function toolDetail(
   return { type: "unknown", input, output: output ?? null } as unknown as ProviderToolCallDetail;
 }
 
+function capOutput(text: string | undefined): string | undefined {
+  if (!text || Buffer.byteLength(text) <= MAX_TOOL_OUTPUT_BYTES) return text;
+  return `${truncateUtf8(text, MAX_TOOL_OUTPUT_BYTES)}\n[truncated]`;
+}
+
 function parseExitCode(output: string | undefined): number | null | undefined {
   if (!output) return undefined;
   const match = output.match(/exited with code (-?\d+)/i);
@@ -154,6 +162,12 @@ function looksLikeDiff(output: string | undefined): boolean {
 }
 
 function textOf(value: unknown): string {
+  const text = rawText(value);
+  if (Buffer.byteLength(text) <= MAX_TOOL_OUTPUT_BYTES) return text;
+  return `${truncateUtf8(text, MAX_TOOL_OUTPUT_BYTES)}\n[truncated]`;
+}
+
+function rawText(value: unknown): string {
   if (typeof value === "string") return value;
   if (Array.isArray(value)) {
     return value
