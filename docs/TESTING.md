@@ -109,6 +109,24 @@ Artifacts are copied to `/tmp/doubao-drawing-artifacts` before cleanup.
 
 Run it before a release and after any change to process handling or guards.
 
+## General scenarios
+
+`scripts/scenarios.sh` runs eight end-to-end scenarios on a throwaway daemon, each with an
+explicit assertion:
+
+| Scenario | Assertion |
+| --- | --- |
+| quick answer | the reply contains `PONG` |
+| news search | a non-trivial answer with a source or link |
+| file write | `hello.txt` exists with the requested content |
+| code reading | the answer references the function's purpose |
+| multi-turn | the secret from turn one is recalled in turn two |
+| image | a valid PNG of at least 512×512 |
+| concurrency cap | a second turn is rejected while the long task runs |
+| long task | four files exist, `DONE` is reported, daemon RSS growth ≤ 150 MB |
+
+The long task is capped at ten minutes. The suite costs seven model calls plus one image.
+
 ## Interrupt check
 
 `scripts/interrupt-check.sh` starts a real image turn, stops the agent after eight

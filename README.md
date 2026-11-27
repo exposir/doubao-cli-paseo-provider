@@ -150,6 +150,7 @@ npm run test:live # unit tests + real CLI (one short completion)
 npm run e2e       # throwaway daemon: install, run, resume
 npm run e2e:draw  # three-turn drawing flow
 npm run soak      # 20 real turns: RSS, leaked processes, restart resume
+npm run scenarios # everyday tasks, image generation, long task, concurrency cap
 ```
 
 | Suite | Covers |

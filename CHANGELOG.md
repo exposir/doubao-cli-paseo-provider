@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Turns killed by a signal now fail with `SIGNAL_<name>` and the stderr tail instead of
+  the opaque `EXIT_null`.
+- A signal, timeout or stall drops the persisted native session id, so the next turn
+  starts a clean Doubao session instead of resuming a locked one.
+- The concurrency cap is global. Paseo opens one provider connection per agent, so the
+  previous per-connection counter never limited real concurrency.
+- `npm test` cleans `dist` first, so deleted tests cannot run from stale build output.
+
+### Added
+
+- `npm run scenarios`: eight end-to-end scenarios — quick answer, news search, file
+  write, code reading, multi-turn recall, image generation, long multi-step task and a
+  live concurrency probe.
+
 ## 0.1.0 — 2026-11-27
 
 First release.

@@ -89,11 +89,12 @@ Failure codes surfaced to Paseo:
 
 ```bash
 npm run typecheck       # 0.17.6 types
-npm test                # 137 unit tests
+npm test                # 141 unit tests
 npm run test:live       # + 3 live tests
 npm run e2e             # throwaway daemon, 2 turns
 npm run e2e:draw        # 3-turn drawing flow
 npm run soak            # 20 real turns, RSS and orphan checks, restart resume
+npm run scenarios       # everyday tasks, image, long task, concurrency cap
 ```
 
 The soak script samples the daemon worker's RSS at every turn, fails if any Doubao
@@ -107,6 +108,10 @@ and the restart follow-up returned the previous token.
 Real interrupt (same host): during an image turn two Doubao processes were running;
 `paseo stop` left zero within two seconds and the agent returned to `idle`
 (`scripts/interrupt-check.sh`).
+
+Scenario suite (same host): quick answer 13 s, news search 25 s, file write 32 s, code
+reading 18 s, multi-turn recall 32 s, image 66 s, long four-file task 24 s with 0 MB RSS
+growth, and the concurrency probe was rejected while the long task was running.
 
 ## Upgrade and rollback
 

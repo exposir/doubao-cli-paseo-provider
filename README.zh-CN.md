@@ -146,6 +146,7 @@ npm run test:live # 单元测试 + 真实 CLI（一次很短的任务）
 npm run e2e       # 临时 daemon：安装、运行、续聊
 npm run e2e:draw  # 三轮绘画流程
 npm run soak      # 20 轮真实任务：RSS、孤儿进程、重启续聊
+npm run scenarios # 日常任务、图片、长任务、并发上限
 ```
 
 | 测试 | 覆盖 |
