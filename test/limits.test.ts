@@ -1,6 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { BoundedText, DEFAULT_LIMITS, resolveLimits, truncateUtf8 } from "../server/limits.js";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  BoundedText,
+  DEFAULT_LIMITS,
+  freeDiskBytes,
+  resolveLimits,
+  truncateUtf8,
+} from "../server/limits.js";
 
 test("resolveLimits merges overrides over the defaults", () => {
   const limits = resolveLimits({ maxConcurrentTurns: 1, maxTurnMs: 0 });
@@ -59,3 +67,45 @@ test("BoundedText with a zero ceiling stores nothing", () => {
   assert.equal(buffer.toString(), "");
   assert.equal(buffer.isTruncated, false);
 });
+
+test("environment variables override the defaults", () => {
+  const saved = {
+    turns: process.env.DOUBAO_PASEO_MAX_TURNS,
+    turnMs: process.env.DOUBAO_PASEO_MAX_TURN_MS,
+    disk: process.env.DOUBAO_PASEO_MIN_FREE_DISK_MB,
+  };
+
+  process.env.DOUBAO_PASEO_MAX_TURNS = "3";
+  process.env.DOUBAO_PASEO_MAX_TURN_MS = "1000";
+  process.env.DOUBAO_PASEO_MIN_FREE_DISK_MB = "10";
+
+  try {
+    const limits = resolveLimits();
+    assert.equal(limits.maxConcurrentTurns, 3);
+    assert.equal(limits.maxTurnMs, 1000);
+    assert.equal(limits.minFreeDiskBytes, 10 * 1024 * 1024);
+  } finally {
+    restore("DOUBAO_PASEO_MAX_TURNS", saved.turns);
+    restore("DOUBAO_PASEO_MAX_TURN_MS", saved.turnMs);
+    restore("DOUBAO_PASEO_MIN_FREE_DISK_MB", saved.disk);
+  }
+});
+
+test("invalid environment values are ignored", () => {
+  process.env.DOUBAO_PASEO_MAX_TURNS = "nope";
+  try {
+    assert.equal(resolveLimits().maxConcurrentTurns, DEFAULT_LIMITS.maxConcurrentTurns);
+  } finally {
+    restore("DOUBAO_PASEO_MAX_TURNS", undefined);
+  }
+});
+
+test("freeDiskBytes reports a real filesystem and tolerates a missing path", async () => {
+  assert.ok((await freeDiskBytes(tmpdir())) > 0);
+  assert.equal(await freeDiskBytes(join(tmpdir(), "definitely-missing-xyz")), Number.POSITIVE_INFINITY);
+});
+
+function restore(key: string, value: string | undefined): void {
+  if (value === undefined) delete process.env[key];
+  else process.env[key] = value;
+}

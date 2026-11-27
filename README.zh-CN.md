@@ -37,6 +37,19 @@
 | `maxAssistantBytes` | 4 MiB | 在 UTF-8 边界截断并标记 `[output truncated]` |
 | `maxStderrBytes` | 64 KiB | 错误详情截断并标记 `[truncated]` |
 | `maxPromptBytes` | 1 MiB | 启动前拒绝，错误码 `PROMPT_TOO_LARGE` |
+| `minFreeDiskBytes` | 512 MiB | 空间不足时拒绝本轮，错误码 `DISK_LOW` |
+
+所有限制都可以用环境变量调整，不需要改代码：
+
+| 环境变量 | 对应限制 |
+| --- | --- |
+| `DOUBAO_PASEO_MAX_TURNS` | `maxConcurrentTurns` |
+| `DOUBAO_PASEO_MAX_TURN_MS` | `maxTurnMs` |
+| `DOUBAO_PASEO_STALL_MS` | `stallTimeoutMs` |
+| `DOUBAO_PASEO_MAX_TEXT_BYTES` | `maxAssistantBytes` |
+| `DOUBAO_PASEO_MAX_STDERR_BYTES` | `maxStderrBytes` |
+| `DOUBAO_PASEO_MAX_PROMPT_BYTES` | `maxPromptBytes` |
+| `DOUBAO_PASEO_MIN_FREE_DISK_MB` | `minFreeDiskBytes` |
 
 另外：
 
@@ -49,6 +62,15 @@
 ```ts
 createDoubaoProvider({ limits: { maxConcurrentTurns: 1, maxTurnMs: 10 * 60_000 } });
 ```
+
+## 安全边界
+
+插件不提供沙箱。无头 `-p` 模式下，CLI 会自动放行工具调用，无论 `--permission-mode` 是什么：
+实测 `ask_risky` 和 `ask_always` 都在没有确认的情况下直接写文件（doubao 2.38.4，无 TTY）。
+这个参数只是透传，Paseo 不负责审批。
+
+需要隔离时，把 daemon 或 workspace 放进容器、沙箱或独立用户下运行；不要把它指向不能接受
+无人值守写入的目录。
 
 ## 前置要求
 
@@ -96,6 +118,7 @@ npm run test:live # 单元测试 + 真实 CLI（会发一条很小的提示词�
 npm run e2e       # 起一个临时 Paseo daemon（随机空闲端口），装插件、跑一轮、
                   # 再追问一轮验证续聊
 npm run e2e:draw  # 完整绘画流程：生成图片、不重画只描述、再画夜景版本
+npm run soak      # 20 轮真实任务：RSS 增长、孤儿进程、重启后续聊
 ```
 
 | 测试文件 | 覆盖内容 |

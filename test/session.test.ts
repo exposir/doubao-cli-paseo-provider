@@ -444,6 +444,18 @@ test("a prompt exactly at the cap is accepted", async () => {
   assert.ok(events.some((event) => event.type === "session.turn" && event.state === "completed"));
 });
 
+test("a turn is refused when free disk is below the floor", async () => {
+  const cli = fakeCli(HAPPY);
+  const events: ProviderEvent[] = [];
+  const session = createSession(cli, cli.dir, events, {
+    limits: { minFreeDiskBytes: Number.MAX_SAFE_INTEGER },
+  });
+
+  await assert.rejects(session.prompt(prompt()), /MB is required/);
+  assert.equal(existsSync(join(cli.dir, "args.log")), false);
+  assert.ok(!events.some((event) => event.type === "session.turn"));
+});
+
 test("a burst of deltas is coalesced into a few timeline updates", async () => {
   const cli = fakeCli(
     [

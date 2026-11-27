@@ -11,6 +11,7 @@ import {
   type ProviderStatus,
 } from "@getpaseo/plugin/server/provider";
 import { catalogCacheKey, fallbackCatalog, loadCatalog } from "./catalog.js";
+import { reapStaleChildren } from "./cli.js";
 import { DoubaoError, errorPayload } from "./errors.js";
 import { resolveLimits, type Limits } from "./limits.js";
 import { listSessions } from "./sessions.js";
@@ -30,7 +31,25 @@ export interface DoubaoProviderOptions {
   limits?: Partial<Limits>;
 }
 
+let reaped = false;
+
+function reapStaleChildrenOnce(): void {
+  if (reaped) return;
+  reaped = true;
+  // Only a daemon that owns a Paseo home should sweep. Without it (tests,
+  // embedded use), other processes may legitimately carry the same marker.
+  if (!process.env.PASEO_HOME) return;
+
+  const killed = reapStaleChildren();
+  if (killed > 0) {
+    console.warn(
+      `[doubao-provider] reaped ${killed} stale child process(es) from a previous daemon`,
+    );
+  }
+}
+
 export function createDoubaoProvider(options: DoubaoProviderOptions = {}): ProviderRegistration {
+  reapStaleChildrenOnce();
   const limits = resolveLimits(options.limits);
 
   return {
@@ -167,6 +186,9 @@ function createConnection(
       case "session.prompt": {
         const session = requireSession(sessions, input.sessionId);
         if (limits.maxConcurrentTurns > 0 && activeTurns >= limits.maxConcurrentTurns) {
+          console.warn(
+            `[doubao-provider] refusing turn: ${activeTurns} running, limit ${limits.maxConcurrentTurns}`,
+          );
           throw new DoubaoError(
             `Too many concurrent Doubao turns (limit ${limits.maxConcurrentTurns}); wait for one to finish or raise the limit`,
             "TOO_MANY_TURNS",

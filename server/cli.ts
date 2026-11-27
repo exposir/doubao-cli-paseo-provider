@@ -1,10 +1,64 @@
 import { execCommand, spawnProcess, terminateProcess } from "@getpaseo/plugin/server";
+import { createHash } from "node:crypto";
+import { readdirSync, readFileSync } from "node:fs";
 import type { ChildProcess } from "node:child_process";
 import type { ProviderLaunch } from "@getpaseo/plugin/server/provider";
 
 /** Discovery commands must never be able to hang the provider catalogue. */
 export const DEFAULT_PROBE_TIMEOUT_MS = 20_000;
 const MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
+
+/**
+ * Every child inherits this marker. A daemon that is SIGKILLed cannot run exit
+ * hooks, so the next start scans /proc for the marker and cleans up instead.
+ */
+export const CHILD_ENV_KEY = "PASEO_DOUBAO_CHILD";
+const CHILD_MARKER = `paseo-${createHash("sha256")
+  .update(process.env.PASEO_HOME ?? "default")
+  .digest("hex")
+  .slice(0, 12)}`;
+
+export function childEnv(env: Readonly<Record<string, string | undefined>>): Record<string, string> {
+  const merged: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (value !== undefined) merged[key] = value;
+  }
+  merged[CHILD_ENV_KEY] = CHILD_MARKER;
+  return merged;
+}
+
+/**
+ * Kill processes left behind by a previous daemon instance. Only processes that
+ * carry this home's marker are touched, so a manual `doubao` session survives.
+ */
+export function reapStaleChildren(marker: string = CHILD_MARKER): number {
+  let entries: string[];
+  try {
+    entries = readdirSync("/proc");
+  } catch {
+    return 0;
+  }
+
+  const needle = `${CHILD_ENV_KEY}=${marker}`;
+  let killed = 0;
+
+  for (const entry of entries) {
+    if (!/^\d+$/.test(entry)) continue;
+    const pid = Number(entry);
+    if (pid === process.pid) continue;
+
+    try {
+      const environ = readFileSync(`/proc/${pid}/environ`);
+      if (!environ.includes(needle)) continue;
+      process.kill(pid, "SIGKILL");
+      killed += 1;
+    } catch {
+      // Process exited between the scan and the read, or it is not ours.
+    }
+  }
+
+  return killed;
+}
 
 export interface ExecOptions {
   cwd?: string;
@@ -91,7 +145,7 @@ export function spawnTurn(
   return trackChild(
     spawnProcess(launch.command, launchArgs(launch, args), {
       cwd,
-      env: launch.env,
+      env: childEnv(launch.env),
       stdio: ["ignore", "pipe", "pipe"],
     }),
   );

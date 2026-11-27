@@ -12,7 +12,7 @@ import type {
 import { buildTurnArgs } from "./args.js";
 import { spawnTurn, stopProcess } from "./cli.js";
 import { DoubaoError, summarizeStderr } from "./errors.js";
-import { BoundedText, resolveLimits, type Limits } from "./limits.js";
+import { BoundedText, freeDiskBytes, resolveLimits, type Limits } from "./limits.js";
 import { extractPromptText } from "./prompt.js";
 import { readPersistedSessionId } from "./sessions.js";
 import { NdjsonParser, applyStreamEvent, createTurnState, type TurnState } from "./stream.js";
@@ -23,6 +23,10 @@ const TEXT_FLUSH_INTERVAL_MS = 80;
 const TEXT_FLUSH_MIN_BYTES = 256;
 /** But never let a slow trickle wait longer than this. */
 const TEXT_FLUSH_MAX_IDLE_MS = 500;
+
+function warn(message: string): void {
+  console.warn(`[doubao-provider] ${message}`);
+}
 
 export interface SessionOptions {
   id: string;
@@ -121,6 +125,8 @@ export class Session {
         models: catalog.models,
         modes: catalog.modes,
         thinkingOptions: modelCatalog?.thinkingOptions ?? catalog.thinkingOptions ?? [],
+        // Required by Paseo 0.15; deprecated but accepted in 0.17.
+        settings: [],
       },
     });
   }
@@ -149,6 +155,19 @@ export class Session {
         `Prompt is ${promptBytes} bytes; the limit is ${this.limits.maxPromptBytes}`,
         "PROMPT_TOO_LARGE",
       );
+    }
+
+    if (this.limits.minFreeDiskBytes > 0) {
+      const freeBytes = await freeDiskBytes(this.config.cwd);
+      if (freeBytes < this.limits.minFreeDiskBytes) {
+        const freeMb = Math.floor(freeBytes / 1024 / 1024);
+        const requiredMb = Math.ceil(this.limits.minFreeDiskBytes / 1024 / 1024);
+        warn(`refusing turn in ${this.config.cwd}: ${freeMb} MB free, ${requiredMb} MB required`);
+        throw new DoubaoError(
+          `Only ${freeMb} MB free in ${this.config.cwd}; at least ${requiredMb} MB is required`,
+          "DISK_LOW",
+        );
+      }
     }
 
     const turnId = randomUUID();
@@ -253,7 +272,12 @@ export class Session {
       return;
     }
 
+    if (state.truncated) {
+      warn(`assistant output truncated at ${this.limits.maxAssistantBytes} bytes (session ${this.id})`);
+    }
+
     if (stopReason === "timeout") {
+      warn(`turn ${turnId} exceeded ${this.limits.maxTurnMs} ms and was stopped (session ${this.id})`);
       this.emit({
         type: "session.turn",
         sessionId: this.id,
@@ -268,6 +292,7 @@ export class Session {
     }
 
     if (stopReason === "stall") {
+      warn(`turn ${turnId} produced no output for ${this.limits.stallTimeoutMs} ms (session ${this.id})`);
       this.emit({
         type: "session.turn",
         sessionId: this.id,

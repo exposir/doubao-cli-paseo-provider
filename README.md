@@ -37,6 +37,19 @@ The daemon should survive a runaway agent. Every limit below is enforced in the 
 | `maxAssistantBytes` | 4 MiB | assistant text is cut at a UTF-8 boundary and marked `[output truncated]` |
 | `maxStderrBytes` | 64 KiB | error detail is cut and marked `[truncated]` |
 | `maxPromptBytes` | 1 MiB | the prompt is rejected with `PROMPT_TOO_LARGE` before spawning |
+| `minFreeDiskBytes` | 512 MiB | the turn is refused with `DISK_LOW` instead of filling the disk |
+
+Every limit can be tuned without rebuilding:
+
+| Environment variable | Limit |
+| --- | --- |
+| `DOUBAO_PASEO_MAX_TURNS` | `maxConcurrentTurns` |
+| `DOUBAO_PASEO_MAX_TURN_MS` | `maxTurnMs` |
+| `DOUBAO_PASEO_STALL_MS` | `stallTimeoutMs` |
+| `DOUBAO_PASEO_MAX_TEXT_BYTES` | `maxAssistantBytes` |
+| `DOUBAO_PASEO_MAX_STDERR_BYTES` | `maxStderrBytes` |
+| `DOUBAO_PASEO_MAX_PROMPT_BYTES` | `maxPromptBytes` |
+| `DOUBAO_PASEO_MIN_FREE_DISK_MB` | `minFreeDiskBytes` |
 
 Also:
 
@@ -50,6 +63,16 @@ Defaults are deliberately conservative. To tune them in code:
 ```ts
 createDoubaoProvider({ limits: { maxConcurrentTurns: 1, maxTurnMs: 10 * 60_000 } });
 ```
+
+## Security
+
+The plugin does not sandbox Doubao. In headless `-p` mode the CLI auto-approves tool calls
+regardless of `--permission-mode`: both `ask_risky` and `ask_always` were observed writing files
+without prompting (doubao 2.38.4, no TTY). The mode is forwarded for compatibility; Paseo does not
+enforce an approval gate.
+
+If you need isolation, run the daemon or the workspace in a container, a sandbox, or under a
+dedicated user. Do not point this provider at a directory where unattended writes are unacceptable.
 
 ## Requirements
 
@@ -122,6 +145,7 @@ npm run e2e       # throwaway Paseo daemon on a free port, installs the plugin,
                   # runs a turn and a follow-up that proves resume worked
 npm run e2e:draw  # full drawing flow: generate an image, describe it without
                   # regenerating, then repaint a night version
+npm run soak      # 20 real turns: RSS growth, leaked processes, restart resume
 ```
 
 Test layout:

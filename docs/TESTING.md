@@ -97,6 +97,18 @@ Two details that are easy to miss:
 
 Artifacts are copied to `/tmp/doubao-drawing-artifacts` before cleanup.
 
+## Soak
+
+`scripts/soak.sh` runs `PASEO_SOAK_TURNS` real turns on a throwaway daemon, then:
+
+- samples the daemon worker RSS at every turn and fails above `PASEO_SOAK_MAX_RSS_GROWTH_MB`;
+- scans `/proc` for the provider's child marker after each turn and fails if any Doubao
+  process survived;
+- restarts the daemon and asks the agent for the previous token, which only works if
+  `--resume` kept the native session.
+
+Run it before a release and after any change to process handling or guards.
+
 ### Environment variables
 
 | Variable | Default | Meaning |
@@ -104,6 +116,8 @@ Artifacts are copied to `/tmp/doubao-drawing-artifacts` before cleanup.
 | `PASEO_E2E_KEEP` | `0` | `1` keeps the temporary home (daemon logs, workspace) |
 | `PASEO_DRAW_ARTIFACTS` | `/tmp/doubao-drawing-artifacts` | where the two PNGs are copied |
 | `PASEO_E2E_EXPECT` | `E2E-OK` | expected string in the basic e2e |
+| `PASEO_SOAK_TURNS` | `20` | turns in the soak script |
+| `PASEO_SOAK_MAX_RSS_GROWTH_MB` | `150` | fail the soak above this daemon RSS growth |
 
 ## Troubleshooting
 
