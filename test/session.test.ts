@@ -370,6 +370,36 @@ test("SIGKILL mentions the likely causes", async () => {
   assert.match(failed.error?.message ?? "", /OOM|external kill/);
 });
 
+test("a signal death drops the native session so the next turn starts clean", async () => {
+  const cli = fakeCli(
+    [
+      `first="$(dirname "$0")/first"`,
+      `printf '%s\\n' '{"type":"system","session_id":"sess-1"}'`,
+      `if [ ! -f "$first" ]; then`,
+      `  touch "$first"`,
+      `  kill -TERM $$`,
+      `fi`,
+      `printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"result":{"type":"text","content":"recovered"}}'`,
+    ].join("\n"),
+  );
+  const events: ProviderEvent[] = [];
+  const session = createSession(cli, cli.dir, events);
+
+  await session.prompt(prompt("one"));
+
+  const cleared = events
+    .filter((event) => event.type === "session.persistence")
+    .at(-1);
+  assert.ok(cleared && cleared.type === "session.persistence");
+  assert.deepEqual(cleared.persistence.data, { doubaoSessionId: null });
+
+  await session.prompt(prompt("two"));
+
+  const calls = readFileSync(join(cli.dir, "args.log"), "utf8").trim().split("\n");
+  assert.doesNotMatch(calls[1], /--resume/);
+  assert.match(assistantText(events), /recovered/);
+});
+
 test("interrupting an idle session is a no-op", async () => {
   const cli = fakeCli(HAPPY);
   const events: ProviderEvent[] = [];

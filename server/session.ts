@@ -278,6 +278,7 @@ export class Session {
 
     if (stopReason === "timeout") {
       warn(`turn ${turnId} exceeded ${this.limits.maxTurnMs} ms and was stopped (session ${this.id})`);
+      this.forgetSessionId();
       this.emit({
         type: "session.turn",
         sessionId: this.id,
@@ -293,6 +294,7 @@ export class Session {
 
     if (stopReason === "stall") {
       warn(`turn ${turnId} produced no output for ${this.limits.stallTimeoutMs} ms (session ${this.id})`);
+      this.forgetSessionId();
       this.emit({
         type: "session.turn",
         sessionId: this.id,
@@ -333,6 +335,7 @@ export class Session {
       const signal = exit.signal ?? "unknown signal";
       const hint = signal === "SIGKILL" ? " (possibly OOM or an external kill)" : "";
       warn(`turn ${turnId} was killed by ${signal} (session ${this.id})`);
+      this.forgetSessionId();
       this.emit({
         type: "session.turn",
         sessionId: this.id,
@@ -405,6 +408,21 @@ export class Session {
     if (persistence) {
       this.emit({ type: "session.persistence", sessionId: this.id, persistence });
     }
+  }
+
+  /**
+   * A turn killed mid-flight can leave the native session locked, and every
+   * later --resume on it fails the same way. Drop the id so the next turn
+   * starts a clean Doubao session instead of inheriting the dead one.
+   */
+  private forgetSessionId(): void {
+    if (!this.doubaoSessionId) return;
+    this.doubaoSessionId = null;
+    this.emit({
+      type: "session.persistence",
+      sessionId: this.id,
+      persistence: { version: 1, data: { doubaoSessionId: null } },
+    });
   }
 
   private scheduleFlush(): void {
