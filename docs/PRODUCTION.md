@@ -104,6 +104,10 @@ Measured on 2026-11-27 (1.6 GB host, doubao 2.38.4): 20 turns, 8–9 s per turn,
 RSS 166 MB peak with no growth across the run, zero leaked processes after every turn,
 and the restart follow-up returned the previous token.
 
+Real interrupt (same host): during an image turn two Doubao processes were running;
+`paseo stop` left zero within two seconds and the agent returned to `idle`
+(`scripts/interrupt-check.sh`).
+
 ## Upgrade and rollback
 
 The plugin has no persisted config of its own; provider state lives in Paseo's agent

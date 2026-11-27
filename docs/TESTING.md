@@ -109,6 +109,12 @@ Artifacts are copied to `/tmp/doubao-drawing-artifacts` before cleanup.
 
 Run it before a release and after any change to process handling or guards.
 
+## Interrupt check
+
+`scripts/interrupt-check.sh` starts a real image turn, stops the agent after eight
+seconds, then asserts that zero Doubao processes carry the provider marker and that the
+agent is back to `idle`. Costs one partial image generation.
+
 ### Environment variables
 
 | Variable | Default | Meaning |
