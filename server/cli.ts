@@ -53,6 +53,34 @@ export function lastJsonObject(stdout: string): Record<string, unknown> | null {
   return null;
 }
 
+const liveChildren = new Set<ChildProcess>();
+let exitHookInstalled = false;
+
+/**
+ * Track every spawned CLI so a daemon shutdown does not leave Doubao processes
+ * (and their images/temp files) behind. `exit` handlers must be synchronous,
+ * which is why this uses kill() instead of the async terminateProcess().
+ */
+function trackChild(child: ChildProcess): ChildProcess {
+  if (!exitHookInstalled) {
+    exitHookInstalled = true;
+    process.once("exit", () => {
+      for (const live of liveChildren) {
+        try {
+          live.kill("SIGKILL");
+        } catch {
+          // Already gone.
+        }
+      }
+      liveChildren.clear();
+    });
+  }
+
+  liveChildren.add(child);
+  child.once("close", () => liveChildren.delete(child));
+  return child;
+}
+
 export function spawnTurn(
   launch: ProviderLaunch,
   args: readonly string[],
@@ -60,11 +88,13 @@ export function spawnTurn(
 ): ChildProcess {
   // stdin is ignored on purpose: `doubao -p` never reads it in headless mode, and a
   // writable pipe would keep the child waiting on a TTY that does not exist.
-  return spawnProcess(launch.command, launchArgs(launch, args), {
-    cwd,
-    env: launch.env,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  return trackChild(
+    spawnProcess(launch.command, launchArgs(launch, args), {
+      cwd,
+      env: launch.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    }),
+  );
 }
 
 /** Ask politely, then force. Doubao spawns helper processes, so a bare SIGINT can leave them behind. */

@@ -12,6 +12,7 @@ import type {
 import { buildTurnArgs } from "./args.js";
 import { spawnTurn, stopProcess } from "./cli.js";
 import { DoubaoError, summarizeStderr } from "./errors.js";
+import { BoundedText, resolveLimits, type Limits } from "./limits.js";
 import { extractPromptText } from "./prompt.js";
 import { readPersistedSessionId } from "./sessions.js";
 import { NdjsonParser, applyStreamEvent, createTurnState, type TurnState } from "./stream.js";
@@ -26,6 +27,7 @@ export interface SessionOptions {
   catalog: () => ProviderCatalog;
   persistence?: ProviderPersistence;
   emit: (event: ProviderEvent) => void;
+  limits?: Partial<Limits>;
 }
 
 export class Session {
@@ -35,6 +37,7 @@ export class Session {
   private readonly launch: ProviderLaunch;
   private readonly getCatalog: () => ProviderCatalog;
   private readonly emitEvent: (event: ProviderEvent) => void;
+  private readonly limits: Limits;
 
   private doubaoSessionId: string | null;
   private activeProcess: ChildProcess | null = null;
@@ -52,6 +55,7 @@ export class Session {
     this.launch = options.launch;
     this.getCatalog = options.catalog;
     this.emitEvent = options.emit;
+    this.limits = resolveLimits(options.limits);
     this.doubaoSessionId = readPersistedSessionId(options.persistence);
   }
 
@@ -134,6 +138,14 @@ export class Session {
     const text = extractPromptText(prompt);
     if (!text) throw new DoubaoError("Prompt is empty", "EMPTY_PROMPT");
 
+    const promptBytes = Buffer.byteLength(text);
+    if (this.limits.maxPromptBytes > 0 && promptBytes > this.limits.maxPromptBytes) {
+      throw new DoubaoError(
+        `Prompt is ${promptBytes} bytes; the limit is ${this.limits.maxPromptBytes}`,
+        "PROMPT_TOO_LARGE",
+      );
+    }
+
     const turnId = randomUUID();
     this.turnId = turnId;
     this.interrupted = false;
@@ -166,12 +178,34 @@ export class Session {
     this.activeProcess = child;
 
     const parser = new NdjsonParser();
-    let stderr = "";
+    const stderr = new BoundedText(this.limits.maxStderrBytes);
+
+    let stopReason: "timeout" | "stall" | null = null;
+    let turnTimer: NodeJS.Timeout | null = null;
+    let stallTimer: NodeJS.Timeout | null = null;
+
+    const armStallTimer = () => {
+      if (this.limits.stallTimeoutMs <= 0) return;
+      if (stallTimer) clearTimeout(stallTimer);
+      stallTimer = setTimeout(() => {
+        stopReason = "stall";
+        void stopProcess(child);
+      }, this.limits.stallTimeoutMs);
+    };
+
+    if (this.limits.maxTurnMs > 0) {
+      turnTimer = setTimeout(() => {
+        stopReason = "timeout";
+        void stopProcess(child);
+      }, this.limits.maxTurnMs);
+    }
+    armStallTimer();
 
     child.stdout?.on("data", (chunk: Buffer) => {
+      armStallTimer();
       for (const event of parser.push(chunk)) {
         const previousSessionId = state.sessionId;
-        applyStreamEvent(state, event);
+        applyStreamEvent(state, event, { maxTextBytes: this.limits.maxAssistantBytes });
 
         if (state.sessionId && state.sessionId !== previousSessionId) {
           this.rememberSessionId(state.sessionId);
@@ -182,10 +216,14 @@ export class Session {
     });
 
     child.stderr?.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString();
+      armStallTimer();
+      stderr.append(chunk);
     });
 
     const exit = await waitForExit(child);
+
+    if (turnTimer) clearTimeout(turnTimer);
+    if (stallTimer) clearTimeout(stallTimer);
 
     if (this.flushTimer) {
       clearTimeout(this.flushTimer);
@@ -197,6 +235,34 @@ export class Session {
 
     if (this.interrupted) {
       this.emit({ type: "session.turn", sessionId: this.id, turnId, state: "canceled" });
+      return;
+    }
+
+    if (stopReason === "timeout") {
+      this.emit({
+        type: "session.turn",
+        sessionId: this.id,
+        turnId,
+        state: "failed",
+        error: {
+          message: `Turn exceeded the ${this.limits.maxTurnMs} ms limit and was stopped`,
+          code: "TURN_TIMEOUT",
+        },
+      });
+      return;
+    }
+
+    if (stopReason === "stall") {
+      this.emit({
+        type: "session.turn",
+        sessionId: this.id,
+        turnId,
+        state: "failed",
+        error: {
+          message: `No output for ${this.limits.stallTimeoutMs} ms; the turn was stopped`,
+          code: "TURN_STALLED",
+        },
+      });
       return;
     }
 
@@ -223,7 +289,7 @@ export class Session {
     }
 
     if (exit.code !== 0) {
-      const detail = summarizeStderr(stderr) || `Doubao CLI exited with code ${exit.code}`;
+      const detail = summarizeStderr(stderr.toString()) || `Doubao CLI exited with code ${exit.code}`;
       this.emit({
         type: "session.turn",
         sessionId: this.id,

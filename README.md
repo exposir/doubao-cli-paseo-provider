@@ -25,6 +25,32 @@ terminal result in one place. This plugin speaks that protocol directly, which k
 - **No global queue** — a long turn never blocks catalogue reads, configuration changes other
   sessions.
 
+## Resource guards
+
+The daemon should survive a runaway agent. Every limit below is enforced in the provider:
+
+| Limit | Default | Behaviour when hit |
+| --- | --- | --- |
+| `maxConcurrentTurns` | 2 | extra prompt fails with `TOO_MANY_TURNS` instead of spawning another ~150 MB process |
+| `maxTurnMs` | 30 min | the turn is stopped and fails with `TURN_TIMEOUT` |
+| `stallTimeoutMs` | 5 min | a turn that produced no output is stopped with `TURN_STALLED` |
+| `maxAssistantBytes` | 4 MiB | assistant text is cut at a UTF-8 boundary and marked `[output truncated]` |
+| `maxStderrBytes` | 64 KiB | error detail is cut and marked `[truncated]` |
+| `maxPromptBytes` | 1 MiB | the prompt is rejected with `PROMPT_TOO_LARGE` before spawning |
+
+Also:
+
+- every discovery command (`model list`, `--list`, `auth status`) has a timeout;
+- every spawned CLI is tracked and receives `SIGKILL` when the daemon exits, so a restart
+  does not leave processes or their temp files behind;
+- interrupt uses `SIGINT`, then `SIGKILL` after a grace period.
+
+Defaults are deliberately conservative. To tune them in code:
+
+```ts
+createDoubaoProvider({ limits: { maxConcurrentTurns: 1, maxTurnMs: 10 * 60_000 } });
+```
+
 ## Requirements
 
 | Requirement | Version |

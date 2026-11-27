@@ -344,3 +344,76 @@ test("opening the same session twice reports a failed request", async () => {
 
   await connection.close();
 });
+
+function sleepCli(): { launch: ProviderLaunch; dir: string } {
+  const dir = mkdtempSync(join(tmpdir(), "doubao-sleep-"));
+  const command = join(dir, "doubao");
+  writeFileSync(
+    command,
+    `#!/usr/bin/env bash
+if [ "$1" = "model" ]; then
+  printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"result":{"type":"model_list","models":[]}}'
+  exit 0
+fi
+printf '%s\\n' '{"type":"system","subtype":"init","session_id":"sess-1"}'
+exec sleep 10
+`,
+  );
+  chmodSync(command, 0o755);
+  return { launch: { command, args: [], env: {} }, dir };
+}
+
+test("concurrent turns are capped per connection", async () => {
+  clearCatalogCache();
+  const { launch, dir } = sleepCli();
+  const registration = createDoubaoProvider({
+    limits: { maxConcurrentTurns: 1, stallTimeoutMs: 0 },
+  });
+  const connection = await registration.connect({
+    versions: [1],
+    capabilities: ["prompt.message"],
+    launch,
+  });
+
+  const events: ProviderEvent[] = [];
+  connection.onEvent((event) => events.push(event));
+
+  for (const id of ["s-1", "s-2"]) {
+    await connection.send({
+      type: "session.open",
+      requestId: `open-${id}`,
+      sessionId: id,
+      history: "skip",
+      config: { cwd: dir, env: {}, mcpServers: {}, settings: {}, persist: false },
+    });
+  }
+  await waitFor(() => events.filter((event) => event.type === "session.ready").length === 2);
+
+  const prompt = (sessionId: string) => ({
+    type: "session.prompt" as const,
+    sessionId,
+    prompt: {
+      clientMessageId: `c-${sessionId}`,
+      delivery: "auto" as const,
+      input: { type: "message" as const, content: [{ type: "text" as const, text: "hi" }] },
+    },
+  });
+
+  await connection.send(prompt("s-1"));
+  await new Promise((resolve) => setTimeout(resolve, 250));
+
+  await connection.send(prompt("s-2"));
+  await waitFor(() =>
+    events.some((event) => event.type === "session.prompt_result" && event.result.type === "failed"),
+  );
+
+  const failed = events.find(
+    (event) => event.type === "session.prompt_result" && event.result.type === "failed",
+  );
+  assert.ok(failed && failed.type === "session.prompt_result");
+  if (failed.result.type === "failed") {
+    assert.equal(failed.result.error.code, "TOO_MANY_TURNS");
+  }
+
+  await connection.close();
+});

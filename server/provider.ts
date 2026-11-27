@@ -12,6 +12,7 @@ import {
 } from "@getpaseo/plugin/server/provider";
 import { catalogCacheKey, fallbackCatalog, loadCatalog } from "./catalog.js";
 import { DoubaoError, errorPayload } from "./errors.js";
+import { resolveLimits, type Limits } from "./limits.js";
 import { listSessions } from "./sessions.js";
 import { Session } from "./session.js";
 
@@ -25,7 +26,13 @@ const CAPABILITIES = [
 
 const AUTH_TIMEOUT_MS = 5000;
 
-export function createDoubaoProvider(): ProviderRegistration {
+export interface DoubaoProviderOptions {
+  limits?: Partial<Limits>;
+}
+
+export function createDoubaoProvider(options: DoubaoProviderOptions = {}): ProviderRegistration {
+  const limits = resolveLimits(options.limits);
+
   return {
     id: "doubao",
     label: "Doubao CLI",
@@ -70,7 +77,7 @@ export function createDoubaoProvider(): ProviderRegistration {
       }
 
       const capabilities = negotiateProviderCapabilities(request.capabilities, CAPABILITIES);
-      return createConnection(request.launch, capabilities);
+      return createConnection(request.launch, capabilities, limits);
     },
   };
 }
@@ -78,12 +85,14 @@ export function createDoubaoProvider(): ProviderRegistration {
 function createConnection(
   launch: ProviderLaunch,
   capabilities: readonly string[],
+  limits: Limits,
 ): ProviderConnection {
   const sessions = new Map<string, Session>();
   const listeners = new Set<(event: ProviderEvent) => void>();
 
   let catalog: ProviderCatalog | null = null;
   let catalogLoading: Promise<ProviderCatalog> | null = null;
+  let activeTurns = 0;
   let closed = false;
 
   function emit(event: ProviderEvent): void {
@@ -139,6 +148,7 @@ function createConnection(
           persistence: input.persistence,
           catalog: currentCatalog,
           emit,
+          limits,
         });
 
         sessions.set(input.sessionId, session);
@@ -156,7 +166,18 @@ function createConnection(
 
       case "session.prompt": {
         const session = requireSession(sessions, input.sessionId);
-        await session.prompt(input.prompt);
+        if (limits.maxConcurrentTurns > 0 && activeTurns >= limits.maxConcurrentTurns) {
+          throw new DoubaoError(
+            `Too many concurrent Doubao turns (limit ${limits.maxConcurrentTurns}); wait for one to finish or raise the limit`,
+            "TOO_MANY_TURNS",
+          );
+        }
+        activeTurns += 1;
+        try {
+          await session.prompt(input.prompt);
+        } finally {
+          activeTurns -= 1;
+        }
         return;
       }
 

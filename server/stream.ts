@@ -10,11 +10,16 @@
  */
 
 import { StringDecoder } from "node:string_decoder";
+import { truncateUtf8 } from "./limits.js";
 
 export interface TurnState {
   sessionId: string | null;
   /** Text accumulated from stream deltas, replaced by the authoritative assistant message. */
   text: string;
+  /** Byte length of `text`, maintained incrementally so caps stay O(chunk). */
+  byteLength: number;
+  /** Set once the answer crossed the per-turn byte cap. */
+  truncated: boolean;
   /** Final answer reported by the `result` event. */
   finalText: string | null;
   error: string | null;
@@ -23,8 +28,21 @@ export interface TurnState {
 
 export type StreamEffect = "none" | "session" | "text" | "done" | "error";
 
+export interface StreamOptions {
+  /** Cap for the assistant text. 0 or undefined disables it. */
+  maxTextBytes?: number;
+}
+
 export function createTurnState(): TurnState {
-  return { sessionId: null, text: "", finalText: null, error: null, done: false };
+  return {
+    sessionId: null,
+    text: "",
+    byteLength: 0,
+    truncated: false,
+    finalText: null,
+    error: null,
+    done: false,
+  };
 }
 
 export class NdjsonParser {
@@ -97,9 +115,15 @@ function textFromResult(result: unknown): string {
 }
 
 /** Apply one protocol event. Returns what changed so callers can throttle emissions. */
-export function applyStreamEvent(state: TurnState, event: unknown): StreamEffect {
+export function applyStreamEvent(
+  state: TurnState,
+  event: unknown,
+  options: StreamOptions = {},
+): StreamEffect {
   const record = asRecord(event);
   if (!record || typeof record.type !== "string") return "none";
+
+  const maxBytes = options.maxTextBytes ?? 0;
 
   if (typeof record.session_id === "string" && !state.sessionId) {
     state.sessionId = record.session_id;
@@ -111,8 +135,7 @@ export function applyStreamEvent(state: TurnState, event: unknown): StreamEffect
       if (!inner || inner.type !== "content_block_delta") break;
       const delta = asRecord(inner.delta);
       if (!delta || delta.type !== "text_delta" || typeof delta.text !== "string") break;
-      state.text += delta.text;
-      return "text";
+      return appendText(state, delta.text, maxBytes) ? "text" : "none";
     }
 
     case "assistant": {
@@ -120,7 +143,7 @@ export function applyStreamEvent(state: TurnState, event: unknown): StreamEffect
       if (!message) break;
       const text = textFromContent(message.content);
       if (text) {
-        state.text = text;
+        replaceText(state, text, maxBytes);
         return "text";
       }
       break;
@@ -135,14 +158,42 @@ export function applyStreamEvent(state: TurnState, event: unknown): StreamEffect
       }
       const text = textFromResult(record.result);
       if (text) {
-        state.finalText = text;
-        state.text = text;
+        replaceText(state, text, maxBytes);
+        state.finalText = state.text;
       }
       return "done";
     }
   }
 
   return state.sessionId ? "session" : "none";
+}
+
+function appendText(state: TurnState, text: string, maxBytes: number): boolean {
+  if (state.truncated) return false;
+
+  const bytes = Buffer.byteLength(text);
+  if (maxBytes > 0 && state.byteLength + bytes > maxBytes) {
+    state.text += "\n\n[output truncated]";
+    state.truncated = true;
+    state.byteLength = maxBytes;
+    return true;
+  }
+
+  state.text += text;
+  state.byteLength += bytes;
+  return true;
+}
+
+function replaceText(state: TurnState, text: string, maxBytes: number): void {
+  if (maxBytes > 0 && Buffer.byteLength(text) > maxBytes) {
+    state.text = `${truncateUtf8(text, maxBytes)}\n\n[output truncated]`;
+    state.byteLength = maxBytes;
+    state.truncated = true;
+    return;
+  }
+
+  state.text = text;
+  state.byteLength = Buffer.byteLength(text);
 }
 
 function summarizeResultError(record: Record<string, unknown>): string {

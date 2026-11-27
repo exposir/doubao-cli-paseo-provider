@@ -21,9 +21,10 @@ Four layers, cheapest first. Each layer is independently runnable.
 | `args.test.ts` | CLI argument order for fresh and resumed turns |
 | `prompt.test.ts` | text, image, uploaded file, GitHub and forge PR/issue formatting, review comments, unknown attachment types |
 | `errors.test.ts` | stderr cleanup, truncation boundaries, error codes |
-| `session.test.ts` | session state machine against a fake CLI: happy path, resume args, non-zero exit, result errors, empty prompt, concurrent prompt, interrupt, close during a turn, open/configure events |
-| `provider.test.ts` | registration, version/launch validation, capability negotiation, catalogue and session-list dispatch, unknown sessions, unnegotiated requests, idempotent close, cache keys |
+| `session.test.ts` | session state machine against a fake CLI: happy path, resume args, non-zero exit, result errors, empty prompt, concurrent prompt, interrupt, close during a turn, open/configure events, prompt size cap, timeout, stall watchdog, output caps |
+| `provider.test.ts` | registration, version/launch validation, capability negotiation, catalogue and session-list dispatch, unknown sessions, unnegotiated requests, idempotent close, cache keys, concurrency cap |
 | `cli.test.ts` | last-protocol-line extraction over logs, noise and malformed tails |
+| `limits.test.ts` | limit merging, UTF-8-safe truncation, byte-bounded buffers |
 
 No network, no CLI, safe for CI.
 

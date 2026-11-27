@@ -25,6 +25,31 @@
 - **探测有超时**：CLI 卡死不会拖住 Paseo 的 provider 目录
 - **没有全局队列**：一个长任务不会阻塞目录读取、配置修改和其它会话
 
+## 资源护栏
+
+目标是让 daemon 不被失控的 agent 拖死。以下限制都在 provider 内部强制执行：
+
+| 限制 | 默认值 | 触发后的行为 |
+| --- | --- | --- |
+| `maxConcurrentTurns` | 2 | 多余请求直接失败 `TOO_MANY_TURNS`，不再多起一个约 150MB 的进程 |
+| `maxTurnMs` | 30 分钟 | 本轮被终止，失败码 `TURN_TIMEOUT` |
+| `stallTimeoutMs` | 5 分钟 | 长时间无输出则终止，失败码 `TURN_STALLED` |
+| `maxAssistantBytes` | 4 MiB | 在 UTF-8 边界截断并标记 `[output truncated]` |
+| `maxStderrBytes` | 64 KiB | 错误详情截断并标记 `[truncated]` |
+| `maxPromptBytes` | 1 MiB | 启动前拒绝，错误码 `PROMPT_TOO_LARGE` |
+
+另外：
+
+- 所有探测命令（`model list`、`--list`、`auth status`）都有超时；
+- 所有子进程都被登记，daemon 退出时会收到 `SIGKILL`，重启不会留下进程和临时文件；
+- 中断先发 `SIGINT`，宽限期后 `SIGKILL`。
+
+默认值偏保守，需要调整时在代码里传：
+
+```ts
+createDoubaoProvider({ limits: { maxConcurrentTurns: 1, maxTurnMs: 10 * 60_000 } });
+```
+
 ## 前置要求
 
 | 项 | 版本 |

@@ -10,6 +10,7 @@ import type {
   ProviderSessionConfig,
 } from "@getpaseo/plugin/server/provider";
 import { fallbackCatalog, MODES } from "../server/catalog.js";
+import type { Limits } from "../server/limits.js";
 import { Session } from "../server/session.js";
 
 interface FakeCli {
@@ -40,6 +41,7 @@ function createSession(
   options: {
     catalog?: ProviderCatalog;
     config?: Partial<ProviderSessionConfig>;
+    limits?: Partial<Limits>;
   } = {},
 ): Session {
   return new Session({
@@ -54,6 +56,7 @@ function createSession(
     },
     launch: { command: cli.command, args: [], env: {} },
     catalog: () => options.catalog ?? fallbackCatalog(),
+    limits: options.limits,
     emit: (event) => events.push(event),
   });
 }
@@ -341,4 +344,88 @@ test("interrupting an idle session is a no-op", async () => {
 
   await session.interrupt();
   assert.ok(!events.some((event) => event.type === "session.turn"));
+});
+
+test("a prompt over the byte cap is rejected before spawning", async () => {
+  const cli = fakeCli(HAPPY);
+  const events: ProviderEvent[] = [];
+  const session = createSession(cli, cli.dir, events, { limits: { maxPromptBytes: 5 } });
+
+  await assert.rejects(session.prompt(prompt("hello world")), /limit is 5/);
+  assert.equal(existsSync(join(cli.dir, "args.log")), false);
+});
+
+test("stderr is bounded before it reaches the error message", async () => {
+  const cli = fakeCli(
+    [
+      `printf '%s\\n' '{"type":"system","session_id":"sess-1"}'`,
+      `yes x | head -c 5000 >&2`,
+      `exit 7`,
+    ].join("\n"),
+  );
+  const events: ProviderEvent[] = [];
+  const session = createSession(cli, cli.dir, events, { limits: { maxStderrBytes: 100 } });
+
+  await session.prompt(prompt());
+
+  const failed = events.find((event) => event.type === "session.turn" && event.state === "failed");
+  assert.ok(failed && failed.type === "session.turn");
+  assert.equal(failed.error?.code, "EXIT_7");
+  assert.match(failed.error?.message ?? "", /\[truncated\]/);
+  assert.ok(Buffer.byteLength(failed.error?.message ?? "") < 400);
+});
+
+test("a turn that exceeds the time limit is stopped", async () => {
+  const cli = fakeCli(
+    [`printf '%s\\n' '{"type":"system","session_id":"sess-1"}'`, `exec sleep 10`].join("\n"),
+  );
+  const events: ProviderEvent[] = [];
+  const session = createSession(cli, cli.dir, events, {
+    limits: { maxTurnMs: 300, stallTimeoutMs: 0 },
+  });
+
+  const started = Date.now();
+  await session.prompt(prompt());
+  const elapsed = Date.now() - started;
+
+  const failed = events.find((event) => event.type === "session.turn" && event.state === "failed");
+  assert.ok(failed && failed.type === "session.turn");
+  assert.equal(failed.error?.code, "TURN_TIMEOUT");
+  // Well below the fake CLI's 10s sleep: the timer, not the process, ended the turn.
+  assert.ok(elapsed < 8000);
+});
+
+test("a silent turn is stopped by the stall watchdog", async () => {
+  const cli = fakeCli(
+    [`printf '%s\\n' '{"type":"system","session_id":"sess-1"}'`, `exec sleep 10`].join("\n"),
+  );
+  const events: ProviderEvent[] = [];
+  const session = createSession(cli, cli.dir, events, {
+    limits: { maxTurnMs: 0, stallTimeoutMs: 300 },
+  });
+
+  await session.prompt(prompt());
+
+  const failed = events.find((event) => event.type === "session.turn" && event.state === "failed");
+  assert.ok(failed && failed.type === "session.turn");
+  assert.equal(failed.error?.code, "TURN_STALLED");
+});
+
+test("assistant output is capped and marked", async () => {
+  const cli = fakeCli(
+    [
+      `printf '%s\\n' '{"type":"system","session_id":"sess-1"}'`,
+      `printf '%s\\n' '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}}'`,
+      `exit 0`,
+    ].join("\n"),
+  );
+  const events: ProviderEvent[] = [];
+  const session = createSession(cli, cli.dir, events, { limits: { maxAssistantBytes: 10 } });
+
+  await session.prompt(prompt());
+
+  assert.match(assistantText(events), /output truncated/);
+  assert.ok(
+    events.some((event) => event.type === "session.turn" && event.state === "completed"),
+  );
 });

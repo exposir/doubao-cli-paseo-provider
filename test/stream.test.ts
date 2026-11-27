@@ -165,3 +165,44 @@ test("a result without text still completes the turn", () => {
   assert.equal(state.done, true);
   assert.equal(state.text, "");
 });
+
+test("streamed text stops at the byte cap and is marked", () => {
+  const state = createTurnState();
+  applyStreamEvent(
+    state,
+    {
+      type: "stream_event",
+      event: { type: "content_block_delta", delta: { type: "text_delta", text: "abcdefghij" } },
+    },
+    { maxTextBytes: 5 },
+  );
+
+  assert.equal(state.truncated, true);
+  assert.match(state.text, /\[output truncated\]/);
+  assert.ok(Buffer.byteLength(state.text) < 40);
+});
+
+test("the assistant message is truncated on a UTF-8 boundary", () => {
+  const state = createTurnState();
+  applyStreamEvent(
+    state,
+    { type: "assistant", message: { content: [{ type: "text", text: "橘猫橘猫" }] } },
+    { maxTextBytes: 4 },
+  );
+
+  assert.equal(state.truncated, true);
+  assert.ok(state.text.startsWith("橘"));
+  assert.ok(!state.text.includes("\uFFFD"));
+});
+
+test("the result payload is bounded as well", () => {
+  const state = createTurnState();
+  applyStreamEvent(
+    state,
+    { type: "result", is_error: false, result: { type: "text", content: "x".repeat(100) } },
+    { maxTextBytes: 10 },
+  );
+
+  assert.equal(state.truncated, true);
+  assert.ok(state.finalText && Buffer.byteLength(state.finalText) < 60);
+});
