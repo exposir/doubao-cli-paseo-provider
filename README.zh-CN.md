@@ -5,8 +5,8 @@
   <p>
     <a href="https://github.com/exposir/doubao-cli-paseo-provider/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/exposir/doubao-cli-paseo-provider/actions/workflows/ci.yml/badge.svg"></a>
     <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg">
-    <img alt="Node >= 22" src="https://img.shields.io/badge/node-%3E%3D22-5fa04e.svg">
-    <img alt="Paseo >= 0.15" src="https://img.shields.io/badge/paseo-%3E%3D0.15-6f42c1.svg">
+    <img alt="Node 22+" src="https://img.shields.io/badge/node-%3E%3D22-5fa04e.svg">
+    <img alt="Paseo 0.15+" src="https://img.shields.io/badge/paseo-%3E%3D0.15-6f42c1.svg">
   </p>
   <p><a href="README.md">English</a> · <a href="docs/PRODUCTION.md">生产说明</a> · <a href="docs/TESTING.md">测试文档</a></p>
 </div>
