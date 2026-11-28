@@ -1,6 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildToolItem, extractToolEvents, type ToolCall } from "../server/tools.js";
+import {
+  buildToolItem,
+  extractToolEvents,
+  toolCallKey,
+  type ToolCall,
+} from "../server/tools.js";
 
 const bashCall: ToolCall = {
   kind: "call",
@@ -48,6 +53,38 @@ test("user tool_result blocks become results", () => {
   assert.deepEqual(events, [
     { kind: "result", callId: "t1", isError: false, output: "ok\ndone" },
   ]);
+});
+
+test("sub-agent thread_id scopes tool keys and timeline ids", () => {
+  const [call] = extractToolEvents({
+    type: "assistant",
+    thread_id: "sub-1",
+    message: {
+      content: [
+        { type: "tool_use", id: "t1", name: "Read", input: { file_path: "/tmp/a" }, input_status: "available" },
+      ],
+    },
+  });
+  const [result] = extractToolEvents({
+    type: "user",
+    thread_id: "sub-1",
+    message: {
+      content: [
+        { type: "tool_result", tool_use_id: "t1", is_error: false, content_status: "truncated" },
+      ],
+    },
+  });
+
+  assert.ok(call && call.kind === "call");
+  assert.ok(result && result.kind === "result");
+  assert.equal(toolCallKey(call), "sub-1:t1");
+  assert.equal(toolCallKey(result), "sub-1:t1");
+
+  const item = buildToolItem(call, result);
+  assert.equal(item.id, "tool:sub-1:t1");
+  if (item.detail.type === "read") {
+    assert.equal(item.detail.content, "[output truncated by CLI]");
+  }
 });
 
 test("a shell call keeps command, cwd, output and exit code", () => {

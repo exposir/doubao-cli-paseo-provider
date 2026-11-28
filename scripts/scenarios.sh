@@ -23,6 +23,27 @@ PY
 )"
 export DOUBAO_PASEO_MAX_TURNS=1
 
+with_timeout() {
+  local seconds="$1"
+  shift
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$seconds" "$@"
+  elif command -v gtimeout >/dev/null 2>&1; then
+    gtimeout "$seconds" "$@"
+  else
+    python3 - "$seconds" "$@" <<'PY'
+import subprocess
+import sys
+
+try:
+    result = subprocess.run(sys.argv[2:], timeout=float(sys.argv[1]))
+except subprocess.TimeoutExpired:
+    raise SystemExit(124)
+raise SystemExit(result.returncode)
+PY
+  fi
+}
+
 cleanup() {
   paseo --home "$HOME_DIR" daemon stop >/dev/null 2>&1 || true
   [ "${PASEO_E2E_KEEP:-0}" = "1" ] && echo "keep: ${HOME_DIR}" || rm -rf "$HOME_DIR"
@@ -49,7 +70,7 @@ agent_id() {
 
 run_turn() {
   local prompt="$1" timeout_s="${2:-300}"
-  (cd "$WORK_DIR" && timeout "$timeout_s" paseo --home "$HOME_DIR" run \
+  (cd "$WORK_DIR" && with_timeout "$timeout_s" paseo --home "$HOME_DIR" run \
     --provider doubao --new-workspace local "$prompt")
 }
 
@@ -81,8 +102,10 @@ except Exception:
 }
 
 rss_mb() {
-  [ -r "/proc/$1/status" ] || { echo 0; return; }
-  awk '/VmRSS/ {print int($2/1024)}' "/proc/$1/status"
+  local rss_kb
+  rss_kb="$(ps -o rss= -p "$1" 2>/dev/null | tr -d ' ')"
+  [ -n "$rss_kb" ] || { echo 0; return; }
+  awk -v rss="$rss_kb" 'BEGIN {print int(rss / 1024)}'
 }
 
 mkdir -p "$WORK_DIR"
@@ -158,7 +181,7 @@ started=$(date +%s)
 OUT="$(run_turn '请记住暗号 ORANGE-42，只回复 OK。' 120)" || true
 ID="$(printf '%s' "$OUT" | agent_id)"
 if [ -n "$ID" ]; then
-  (cd "$WORK_DIR" && timeout 180 paseo --home "$HOME_DIR" send "$ID" '暗号是什么？只回答暗号本身。') >/dev/null || true
+  (cd "$WORK_DIR" && with_timeout 180 paseo --home "$HOME_DIR" send "$ID" '暗号是什么？只回答暗号本身。') >/dev/null || true
   if logs_of "$ID" | grep -q 'ORANGE-42'; then
     pass "multi-turn" "$(( $(date +%s) - started ))s"
   else
@@ -188,7 +211,7 @@ fi
 # 7. long task + concurrency probe
 started=$(date +%s)
 LONG_PROMPT='请分 4 步完成：在当前目录创建 step1.txt、step2.txt、step3.txt、step4.txt，每个文件写入约 100 字的中文说明。全部完成后只回复 DONE。'
-OUT="$(cd "$WORK_DIR" && timeout 60 paseo --home "$HOME_DIR" run --provider doubao --new-workspace local --no-wait "$LONG_PROMPT" 2>/dev/null)" || true
+OUT="$(cd "$WORK_DIR" && with_timeout 60 paseo --home "$HOME_DIR" run --provider doubao --new-workspace local --no-wait "$LONG_PROMPT" 2>/dev/null)" || true
 ID="$(printf '%s' "$OUT" | agent_id)"
 
 if [ -n "$ID" ]; then
@@ -197,7 +220,7 @@ if [ -n "$ID" ]; then
   RSS_START="$(rss_mb "$PID")"; RSS_MAX="$RSS_START"
   sleep 8
 
-  PROBE="$(cd "$WORK_DIR" && timeout 60 paseo --home "$HOME_DIR" run --provider doubao --new-workspace local '只回复：SECOND' 2>&1)" || true
+  PROBE="$(cd "$WORK_DIR" && with_timeout 60 paseo --home "$HOME_DIR" run --provider doubao --new-workspace local '只回复：SECOND' 2>&1)" || true
   PROBE_ID="$(printf '%s' "$PROBE" | agent_id)"
   if { [ -n "$PROBE_ID" ] && logs_of "$PROBE_ID" | grep -qE 'Too many concurrent|TOO_MANY_TURNS'; } \
      || printf '%s' "$PROBE" | grep -qE 'TOO_MANY_TURNS|Too many concurrent'; then

@@ -1,4 +1,5 @@
 import type { ProviderContent, ProviderPrompt } from "@getpaseo/plugin/server/provider";
+import { DoubaoError } from "./errors.js";
 
 /**
  * Doubao's headless mode takes one string. Attachments Paseo can send that the CLI
@@ -11,7 +12,10 @@ export function formatPromptContent(content: readonly ProviderContent[]): string
   for (const item of content) {
     switch (item.type) {
       case "text":
-        if (item.text.trim()) parts.push(item.text);
+        if (item.text.trim()) {
+          const header = textAttachmentHeader(item);
+          parts.push(header ? `${header}\n${item.text}` : item.text);
+        }
         break;
 
       case "image":
@@ -59,6 +63,20 @@ export function formatPromptContent(content: readonly ProviderContent[]): string
   return parts.join("\n\n").trim();
 }
 
+function textAttachmentHeader(
+  item: Extract<ProviderContent, { type: "text" }>,
+): string | null {
+  const resource = "externalResource" in item ? item.externalResource : undefined;
+  if (!resource) {
+    const title = "title" in item && typeof item.title === "string" ? item.title.trim() : "";
+    return title ? `[Text attachment: ${title}]` : null;
+  }
+  const title = resource.title.trim() || resource.identifier.trim();
+  const label = resource.providerLabel.trim() || resource.provider.trim();
+  const details = [label, title].filter(Boolean).join(": ");
+  return `[External resource${details ? `: ${details}` : ""}${resource.url ? ` (${resource.url})` : ""}]`;
+}
+
 export function extractPromptText(prompt: ProviderPrompt): string {
   if (prompt.input.type === "command") {
     return `/${prompt.input.name} ${prompt.input.arguments}`.trim();
@@ -73,4 +91,22 @@ export function countCodePoints(text: string): number {
   let count = 0;
   for (const _ of text) count += 1;
   return count;
+}
+
+export function validatePromptText(text: string, maxBytes: number): void {
+  if (!text) throw new DoubaoError("Prompt is empty", "EMPTY_PROMPT");
+  const codePoints = countCodePoints(text);
+  if (codePoints > MAX_PROMPT_CODE_POINTS) {
+    throw new DoubaoError(
+      `Prompt is ${codePoints} code points; the limit is ${MAX_PROMPT_CODE_POINTS}`,
+      "PROMPT_TOO_LARGE",
+    );
+  }
+  const bytes = Buffer.byteLength(text);
+  if (maxBytes > 0 && bytes > maxBytes) {
+    throw new DoubaoError(
+      `Prompt is ${bytes} bytes; the limit is ${maxBytes}`,
+      "PROMPT_TOO_LARGE",
+    );
+  }
 }

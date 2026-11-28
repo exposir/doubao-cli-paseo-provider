@@ -1,4 +1,3 @@
-import { execCommand } from "@getpaseo/plugin/server";
 import {
   negotiateProviderCapabilities,
   requireProviderCapabilities,
@@ -7,13 +6,19 @@ import {
   type ProviderEvent,
   type ProviderInput,
   type ProviderLaunch,
-  type ProviderRegistration,
   type ProviderStatus,
 } from "@getpaseo/plugin/server/provider";
+import { createDoubaoAcpProvider } from "./acp.js";
 import { catalogCacheKey, fallbackCatalog, loadCatalog } from "./catalog.js";
-import { reapStaleChildren } from "./cli.js";
+import {
+  checkDoubaoAuth,
+  DOUBAO_DOCS_URL,
+  doubaoProviderInstallation,
+  reapStaleChildrenOnce,
+  type DoubaoProviderRegistration,
+} from "./cli.js";
 import { DoubaoError, errorPayload } from "./errors.js";
-import { resolveLimits, type Limits } from "./limits.js";
+import { resolveLimits, withTurnSlot, type Limits } from "./limits.js";
 import { listSessions } from "./sessions.js";
 import { Session } from "./session.js";
 
@@ -25,33 +30,29 @@ const CAPABILITIES = [
   "session.list",
 ] as const;
 
-const AUTH_TIMEOUT_MS = 5000;
+export type DoubaoTransport = "stream-json" | "acp";
 
 export interface DoubaoProviderOptions {
   limits?: Partial<Limits>;
+  /** Protocol backend: `stream-json` (default, per-turn process) or `acp` (`doubao acp serve`). */
+  transport?: DoubaoTransport;
+  /** Startup timeout when `transport` is `acp`. */
+  acpStartupTimeoutMs?: number;
 }
 
-let reaped = false;
-// Paseo opens a provider connection per agent, so the limit must live on the
-// module, not on one connection, or every agent gets its own allowance.
-let activeTurns = 0;
+export function resolveTransport(
+  explicit?: DoubaoTransport,
+  env: NodeJS.ProcessEnv = process.env,
+): DoubaoTransport {
+  if (explicit === "acp" || explicit === "stream-json") return explicit;
+  return env.DOUBAO_PASEO_TRANSPORT?.trim().toLowerCase() === "acp" ? "acp" : "stream-json";
+}
 
-function reapStaleChildrenOnce(): void {
-  if (reaped) return;
-  reaped = true;
-  // Only a daemon that owns a Paseo home should sweep. Without it (tests,
-  // embedded use), other processes may legitimately carry the same marker.
-  if (!process.env.PASEO_HOME) return;
-
-  const killed = reapStaleChildren();
-  if (killed > 0) {
-    console.warn(
-      `[doubao-provider] reaped ${killed} stale child process(es) from a previous daemon`,
-    );
+export function createDoubaoProvider(options: DoubaoProviderOptions = {}): DoubaoProviderRegistration {
+  if (resolveTransport(options.transport) === "acp") {
+    return createDoubaoAcpProvider({ startupTimeoutMs: options.acpStartupTimeoutMs, limits: options.limits });
   }
-}
 
-export function createDoubaoProvider(options: DoubaoProviderOptions = {}): ProviderRegistration {
   reapStaleChildrenOnce();
   const limits = resolveLimits(options.limits);
 
@@ -61,29 +62,11 @@ export function createDoubaoProvider(options: DoubaoProviderOptions = {}): Provi
     description: "Doubao coding agent through the official doubao CLI",
     icon: "icon.svg",
     command: ["doubao"],
+    docsUrl: DOUBAO_DOCS_URL,
+    installation: doubaoProviderInstallation(),
 
-    async status({ launch }): Promise<ProviderStatus> {
-      if (!launch) {
-        return {
-          available: false,
-          diagnostic: "doubao was not found on PATH. Install the Doubao CLI and make sure it is reachable.",
-        };
-      }
-
-      try {
-        await execCommand(launch.command, [...launch.args, "auth", "status"], {
-          env: launch.env,
-          timeout: AUTH_TIMEOUT_MS,
-          maxBuffer: 1024 * 1024,
-        });
-        return { available: true };
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        return {
-          available: false,
-          diagnostic: `doubao is installed but not usable (${message}). Run \`doubao login\` in a terminal.`,
-        };
-      }
+    status({ launch }): Promise<ProviderStatus> {
+      return checkDoubaoAuth(launch);
     },
 
     getCatalogCacheKey({ launch }) {
@@ -113,7 +96,7 @@ function createConnection(
   const listeners = new Set<(event: ProviderEvent) => void>();
 
   let catalog: ProviderCatalog | null = null;
-  let catalogLoading: Promise<ProviderCatalog> | null = null;
+  let closing = false;
   let closed = false;
 
   function emit(event: ProviderEvent): void {
@@ -125,26 +108,21 @@ function createConnection(
     return catalog ?? fallbackCatalog();
   }
 
-  function ensureCatalog(cwd?: string): Promise<ProviderCatalog> {
-    if (catalog) return Promise.resolve(catalog);
-    if (!catalogLoading) {
-      catalogLoading = loadCatalog(launch, { cwd })
-        .then((value) => {
-          catalog = value;
-          return value;
-        })
-        .finally(() => {
-          catalogLoading = null;
-        });
-    }
-    return catalogLoading;
+  function rememberCatalog(value: ProviderCatalog): void {
+    // Only pin a real model list; keep retrying if a transient probe fell back to empty.
+    if (value.models.length > 0) catalog = value;
+  }
+
+  async function refreshCatalog(cwd?: string): Promise<ProviderCatalog> {
+    const value = await loadCatalog(launch, { cwd });
+    rememberCatalog(value);
+    return value;
   }
 
   async function route(input: ProviderInput): Promise<void> {
     switch (input.type) {
       case "catalog": {
-        const value = await loadCatalog(launch, { cwd: input.cwd });
-        catalog = value;
+        const value = await refreshCatalog(input.cwd);
         emit({ type: "catalog", requestId: input.requestId, catalog: value });
         return;
       }
@@ -177,9 +155,11 @@ function createConnection(
 
         // The catalogue is discovered in the background so opening a session never
         // waits on a network round-trip. When it lands, publish the real model list.
-        void ensureCatalog(input.config.cwd)
-          .then(() => {
-            if (!closed && sessions.get(input.sessionId) === session) session.publishConfig();
+        void refreshCatalog(input.config.cwd)
+          .then((value) => {
+            if (!closed && value.models.length > 0 && sessions.get(input.sessionId) === session) {
+              session.publishConfig();
+            }
           })
           .catch(() => undefined);
         return;
@@ -187,21 +167,7 @@ function createConnection(
 
       case "session.prompt": {
         const session = requireSession(sessions, input.sessionId);
-        if (limits.maxConcurrentTurns > 0 && activeTurns >= limits.maxConcurrentTurns) {
-          console.warn(
-            `[doubao-provider] refusing turn: ${activeTurns} running, limit ${limits.maxConcurrentTurns}`,
-          );
-          throw new DoubaoError(
-            `Too many concurrent Doubao turns (limit ${limits.maxConcurrentTurns}); wait for one to finish or raise the limit`,
-            "TOO_MANY_TURNS",
-          );
-        }
-        activeTurns += 1;
-        try {
-          await session.prompt(input.prompt);
-        } finally {
-          activeTurns -= 1;
-        }
+        await withTurnSlot(limits.maxConcurrentTurns, () => session.prompt(input.prompt));
         return;
       }
 
@@ -270,7 +236,7 @@ function createConnection(
     capabilities,
 
     async send(input) {
-      if (closed) throw new DoubaoError("Connection is closed", "CLOSED");
+      if (closing || closed) throw new DoubaoError("Connection is closed", "CLOSED");
       requireProviderCapabilities(capabilities, input);
       // Requests are independent on purpose: a long turn in one session must not
       // queue catalogue reads, configuration changes or other sessions behind it.
@@ -283,9 +249,11 @@ function createConnection(
     },
 
     async close() {
-      if (closed) return;
-      closed = true;
+      if (closing || closed) return;
+      closing = true;
+      // Keep emitting until active sessions report their terminal canceled events.
       await Promise.all([...sessions.values()].map((session) => session.close()));
+      closed = true;
       sessions.clear();
       listeners.clear();
     },

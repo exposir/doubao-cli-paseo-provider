@@ -12,6 +12,8 @@ set -euo pipefail
 
 TURNS="${PASEO_SOAK_TURNS:-20}"
 MAX_RSS_GROWTH_MB="${PASEO_SOAK_MAX_RSS_GROWTH_MB:-150}"
+TRANSPORT="${DOUBAO_PASEO_TRANSPORT:-stream-json}"
+export DOUBAO_PASEO_TRANSPORT="$TRANSPORT"
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HOME_DIR="$(mktemp -d "${TMPDIR:-/tmp}/paseo-soak.XXXXXX")"
@@ -24,7 +26,40 @@ print(s.getsockname()[1])
 s.close()
 PY
 )"
-MARKER="paseo-$(printf '%s' "$HOME_DIR" | sha256sum | cut -c1-12)"
+sha256_hex() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum | cut -d' ' -f1
+  else
+    shasum -a 256 | cut -d' ' -f1
+  fi
+}
+
+MARKER="paseo-$(printf '%s' "$HOME_DIR" | sha256_hex | cut -c1-12)"
+
+now_ms() {
+  python3 -c 'import time; print(time.time_ns() // 1_000_000)'
+}
+
+with_timeout() {
+  local seconds="$1"
+  shift
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$seconds" "$@"
+  elif command -v gtimeout >/dev/null 2>&1; then
+    gtimeout "$seconds" "$@"
+  else
+    python3 - "$seconds" "$@" <<'PY'
+import subprocess
+import sys
+
+try:
+    result = subprocess.run(sys.argv[2:], timeout=float(sys.argv[1]))
+except subprocess.TimeoutExpired:
+    raise SystemExit(124)
+raise SystemExit(result.returncode)
+PY
+  fi
+}
 
 cleanup() {
   paseo --home "$HOME_DIR" daemon stop >/dev/null 2>&1 || true
@@ -43,6 +78,13 @@ fail() {
 }
 
 count_marked() {
+  if [ ! -d /proc/1 ]; then
+    local matches
+    matches="$(ps -axww -E -o pid=,command= 2>/dev/null |
+      grep -Ec "(^|[[:space:]])PASEO_DOUBAO_CHILD=${MARKER}([[:space:]]|$)" || true)"
+    echo "${matches:-0}"
+    return
+  fi
   local count=0
   for proc in /proc/[0-9]*; do
     [ -r "${proc}/environ" ] || continue
@@ -54,9 +96,10 @@ count_marked() {
 }
 
 rss_mb() {
-  local pid="$1"
-  [ -r "/proc/${pid}/status" ] || { echo 0; return; }
-  awk '/VmRSS/ {print int($2/1024)}' "/proc/${pid}/status"
+  local rss_kb
+  rss_kb="$(ps -o rss= -p "$1" 2>/dev/null | tr -d ' ')"
+  [ -n "$rss_kb" ] || { echo 0; return; }
+  awk -v rss="$rss_kb" 'BEGIN {print int(rss / 1024)}'
 }
 
 worker_pid() {
@@ -88,7 +131,7 @@ cat > "$HOME_DIR/config.json" <<JSON
 }
 JSON
 
-echo "==> daemon on 127.0.0.1:${PORT}, ${TURNS} turns"
+echo "==> daemon on 127.0.0.1:${PORT}, ${TURNS} turns, transport ${TRANSPORT}"
 paseo --home "$HOME_DIR" daemon start >/dev/null
 paseo --home "$HOME_DIR" plugin install "$REPO_DIR" >/dev/null 2>&1
 paseo --home "$HOME_DIR" project create "$WORK_DIR" >/dev/null
@@ -110,14 +153,16 @@ RSS_MAX="$RSS_START"
 
 printf 'turn  rss(MB)  marked  ms\n'
 for index in $(seq 1 "$TURNS"); do
-  started="$(date +%s%3N)"
-  timeout 180 paseo --home "$HOME_DIR" send "$AGENT_ID" "只回复 TOKEN-${index}" >/dev/null \
+  started="$(now_ms)"
+  with_timeout 180 paseo --home "$HOME_DIR" send "$AGENT_ID" "只回复 TOKEN-${index}" >/dev/null \
     || fail "turn ${index} did not complete"
-  elapsed=$(( $(date +%s%3N) - started ))
+  elapsed=$(( $(now_ms) - started ))
 
   sleep 1
   orphans="$(count_marked)"
-  [ "$orphans" -eq 0 ] || fail "turn ${index} left ${orphans} doubao process(es) behind"
+  if [ "$TRANSPORT" != "acp" ]; then
+    [ "$orphans" -eq 0 ] || fail "turn ${index} left ${orphans} doubao process(es) behind"
+  fi
 
   rss="$(rss_mb "$PID")"
   if [ "$rss" -gt "$RSS_MAX" ]; then RSS_MAX="$rss"; fi
@@ -135,7 +180,7 @@ echo "==> restart daemon, then a follow-up that proves resume"
 paseo --home "$HOME_DIR" daemon stop >/dev/null
 paseo --home "$HOME_DIR" daemon start >/dev/null
 
-timeout 180 paseo --home "$HOME_DIR" send "$AGENT_ID" \
+with_timeout 180 paseo --home "$HOME_DIR" send "$AGENT_ID" \
   "不要执行新任务。只回答：上一轮我让你回复的 token 是什么？" >/dev/null \
   || fail "post-restart turn did not complete"
 
@@ -143,8 +188,9 @@ LOGS="$(paseo --home "$HOME_DIR" logs "$AGENT_ID")"
 printf '%s' "$LOGS" | grep -q "TOKEN-${TURNS}" || fail "session did not resume after restart"
 
 sleep 1
+paseo --home "$HOME_DIR" daemon stop >/dev/null
 orphans="$(count_marked)"
-[ "$orphans" -eq 0 ] || fail "${orphans} doubao process(es) left after restart"
+[ "$orphans" -eq 0 ] || fail "${orphans} doubao process(es) left after daemon stop"
 
 echo
 echo "PASS: ${TURNS} turns, RSS growth ${GROWTH} MB, no leaked processes, resume after restart"

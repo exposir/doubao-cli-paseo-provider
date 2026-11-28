@@ -178,6 +178,40 @@ function callCount(dir: string): number {
   return existsSync(path) ? readFileSync(path, "utf8").trim().split("\n").filter(Boolean).length : 0;
 }
 
+function slowCli(delaySeconds: string): { launch: ProviderLaunch; dir: string } {
+  const dir = mkdtempSync(join(tmpdir(), "doubao-catalog-slow-"));
+  const command = join(dir, "doubao.mjs");
+  writeFileSync(
+    command,
+    `import { appendFileSync, existsSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+const dir = ${JSON.stringify(dir)};
+appendFileSync(join(dir, "calls"), "call\\n");
+process.once("SIGTERM", () => {
+  writeFileSync(join(dir, "aborted"), "");
+  process.exit(130);
+});
+setTimeout(() => {
+  console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: {
+    type: "model_list",
+    models: [{ id: "m1", name: "Model One", is_default: true }],
+  } }));
+}, existsSync(join(dir, "aborted")) ? 0 : ${Number(delaySeconds) * 1000});
+`,
+  );
+  chmodSync(command, 0o755);
+  return { launch: { command: process.execPath, args: [command], env: {} }, dir };
+}
+
+async function waitUntil(predicate: () => boolean, timeoutMs = 3000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.fail("timed out");
+}
+
 test("loadCatalog caches within the TTL", async () => {
   clearCatalogCache();
   const { launch, dir } = countingCli();
@@ -221,4 +255,71 @@ test("concurrent loadCatalog calls share one probe", async () => {
   assert.equal(a.models[0].id, "m1");
   assert.equal(b.models[0].id, "m1");
   assert.equal(callCount(dir), 1);
+});
+
+test("one canceled catalog waiter does not abort a shared probe", async () => {
+  clearCatalogCache();
+  const { launch, dir } = slowCli("0.3");
+  const canceled = new AbortController();
+  const surviving = new AbortController();
+
+  const first = loadCatalog(launch, { signal: canceled.signal });
+  const second = loadCatalog(launch, { signal: surviving.signal });
+  await waitUntil(() => callCount(dir) === 1);
+  canceled.abort(new Error("caller canceled"));
+
+  await assert.rejects(first, /caller canceled/);
+  const catalog = await second;
+  assert.equal(catalog.models[0].id, "m1");
+  assert.equal(callCount(dir), 1);
+});
+
+test("all canceled catalog waiters abort the shared CLI probe", async () => {
+  clearCatalogCache();
+  const { launch, dir } = slowCli("5");
+  const firstController = new AbortController();
+  const secondController = new AbortController();
+
+  const first = loadCatalog(launch, { signal: firstController.signal });
+  const second = loadCatalog(launch, { signal: secondController.signal });
+  await waitUntil(() => callCount(dir) === 1);
+  firstController.abort(new Error("first canceled"));
+  secondController.abort(new Error("second canceled"));
+
+  await assert.rejects(first, /first canceled/);
+  await assert.rejects(second, /second canceled/);
+  await waitUntil(() => existsSync(join(dir, "aborted")), 5000);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  const recovered = await loadCatalog(launch);
+  assert.equal(recovered.models[0].id, "m1");
+  assert.equal(callCount(dir), 2);
+});
+
+test("loadCatalog does not cache an empty model list from a transient response", async () => {
+  clearCatalogCache();
+  const dir = mkdtempSync(join(tmpdir(), "doubao-catalog-empty-"));
+  const command = join(dir, "doubao");
+  writeFileSync(
+    command,
+    `#!/usr/bin/env bash
+printf 'call\\n' >> "${dir}/calls"
+if [ ! -f "${dir}/ready" ]; then
+  touch "${dir}/ready"
+  printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"result":{"type":"model_list","models":[]}}'
+  exit 0
+fi
+printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"result":{"type":"model_list","models":[{"id":"m1","name":"Model One","is_default":true}]}}'
+`,
+  );
+  chmodSync(command, 0o755);
+  const launch: ProviderLaunch = { command, args: [], env: {} };
+
+  const first = await loadCatalog(launch);
+  assert.deepEqual(first.models, []);
+
+  const second = await loadCatalog(launch);
+  assert.equal(second.models.length, 1);
+  assert.equal(second.models[0].id, "m1");
+  assert.equal(callCount(dir), 2);
 });

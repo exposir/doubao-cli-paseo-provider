@@ -1,6 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { NdjsonParser, applyStreamEvent, createTurnState } from "../server/stream.js";
+import {
+  NdjsonParser,
+  applyStreamEvent,
+  createTurnState,
+  extractTextMessageId,
+  resetMessageBuffer,
+} from "../server/stream.js";
 
 test("NdjsonParser reassembles a line split across chunks", () => {
   const parser = new NdjsonParser();
@@ -28,6 +34,11 @@ test("NdjsonParser flushes a trailing event without newline", () => {
   parser.push('{"type":"result","subtype":"success","is_error":false,"result":{"type":"text","content":"tail"}}');
   const events = parser.end();
   assert.equal(events.length, 1);
+});
+
+test("NdjsonParser rejects a line above its configured byte ceiling", () => {
+  const parser = new NdjsonParser(8);
+  assert.throws(() => parser.push("123456789"), /size limit/);
 });
 
 test("stream deltas accumulate and are superseded by the assistant message", () => {
@@ -65,6 +76,17 @@ test("result event records final text and completes the turn", () => {
   assert.equal(state.text, "final answer");
 });
 
+test("result.log_id records the cloud trace without changing the error code", () => {
+  const state = createTurnState();
+  const effect = applyStreamEvent(state, {
+    type: "result", is_error: true, log_id: " cloud-trace-123 ",
+    error: { code: "busy", message: "Already running" },
+  });
+  assert.equal(effect, "error");
+  assert.equal(state.logId, "cloud-trace-123");
+  assert.equal(state.errorCode, "busy");
+});
+
 test("result with is_error reports the error", () => {
   const state = createTurnState();
   const effect = applyStreamEvent(state, {
@@ -76,7 +98,41 @@ test("result with is_error reports the error", () => {
 
   assert.equal(effect, "error");
   assert.equal(state.error, "too many turns");
+  assert.equal(state.errorCode, null);
   assert.equal(state.done, true);
+});
+
+test("result with CLI errors array and error.code preserves both", () => {
+  const state = createTurnState();
+  const effect = applyStreamEvent(state, {
+    type: "result",
+    subtype: "error_during_execution",
+    is_error: true,
+    errors: ["需要登录，请在终端运行 doubao login", "会话已失效"],
+    error: { code: "login_required" },
+  });
+
+  assert.equal(effect, "error");
+  assert.equal(state.error, "需要登录，请在终端运行 doubao login\n会话已失效");
+  assert.equal(state.errorCode, "login_required");
+  assert.equal(state.done, true);
+});
+
+test("result extracts permission_denials on both success and failure", () => {
+  const state = createTurnState();
+  applyStreamEvent(state, {
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    result: { type: "text", content: "partial" },
+    permission_denials: [
+      { tool_name: "Bash", tool_use_id: "t1", prompt: "rm -rf /" },
+    ],
+  });
+
+  assert.deepEqual(state.permissionDenials, [
+    { toolName: "Bash", toolUseId: "t1", prompt: "rm -rf /" },
+  ]);
 });
 
 test("unknown events keep the learned session id", () => {
@@ -166,7 +222,7 @@ test("a result without text still completes the turn", () => {
   assert.equal(state.text, "");
 });
 
-test("streamed text stops at the byte cap and is marked", () => {
+test("streamed text keeps the fitting UTF-8 prefix at the byte cap and is marked", () => {
   const state = createTurnState();
   applyStreamEvent(
     state,
@@ -178,8 +234,88 @@ test("streamed text stops at the byte cap and is marked", () => {
   );
 
   assert.equal(state.truncated, true);
+  assert.ok(state.text.startsWith("abcde"));
   assert.match(state.text, /\[output truncated\]/);
   assert.ok(Buffer.byteLength(state.text) < 40);
+});
+
+test("version advances when a replacement is shorter or triggers truncation at the exact cap", () => {
+  const state = createTurnState();
+  applyStreamEvent(
+    state,
+    {
+      type: "stream_event",
+      event: { type: "content_block_delta", delta: { type: "text_delta", text: "12345" } },
+    },
+    { maxTextBytes: 5 },
+  );
+  const vAtCap = state.version;
+
+  applyStreamEvent(
+    state,
+    {
+      type: "stream_event",
+      event: { type: "content_block_delta", delta: { type: "text_delta", text: "6" } },
+    },
+    { maxTextBytes: 5 },
+  );
+  assert.equal(state.truncated, true);
+  assert.ok(state.version > vAtCap);
+
+  const vBeforeReplace = state.version;
+  applyStreamEvent(state, {
+    type: "assistant",
+    message: { content: [{ type: "text", text: "ok" }] },
+  });
+  assert.equal(state.text, "ok");
+  assert.ok(state.version > vBeforeReplace);
+
+  // Identical replacement does not bump version unnecessarily.
+  const vSame = state.version;
+  applyStreamEvent(state, {
+    type: "result",
+    is_error: false,
+    result: { type: "text", content: "ok" },
+  });
+  assert.equal(state.version, vSame);
+});
+
+test("extractTextMessageId ignores tool-only assistant events and resetMessageBuffer preserves session state", () => {
+  assert.equal(
+    extractTextMessageId({
+      type: "stream_event",
+      message_id: "m1",
+      event: { type: "content_block_delta", delta: { type: "text_delta", text: "hi" } },
+    }),
+    "m1",
+  );
+  assert.equal(
+    extractTextMessageId({
+      type: "assistant",
+      message: { id: "m1:tool_use:t1", content: [{ type: "tool_use", id: "t1", name: "Bash" }] },
+    }),
+    null,
+  );
+  assert.equal(
+    extractTextMessageId({
+      type: "assistant",
+      message: { id: "m2", content: [{ type: "text", text: "done" }] },
+    }),
+    "m2",
+  );
+
+  const state = createTurnState();
+  state.sessionId = "s1";
+  state.messageId = "m1";
+  state.text = "first";
+  state.byteLength = 5;
+  state.version = 3;
+  resetMessageBuffer(state, "m2");
+  assert.equal(state.sessionId, "s1");
+  assert.equal(state.messageId, "m2");
+  assert.equal(state.text, "");
+  assert.equal(state.byteLength, 0);
+  assert.equal(state.version, 3);
 });
 
 test("the assistant message is truncated on a UTF-8 boundary", () => {

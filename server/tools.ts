@@ -13,6 +13,8 @@ export interface ToolCall {
   callId: string;
   name: string;
   input: Record<string, unknown>;
+  threadId?: string;
+  inputStatus?: string;
 }
 
 export interface ToolResult {
@@ -20,14 +22,23 @@ export interface ToolResult {
   callId: string;
   isError: boolean;
   output: string;
+  threadId?: string;
+  contentStatus?: string;
 }
 
 export type ToolEvent = ToolCall | ToolResult;
+
+/** Unique key for a tool call, scoped by `thread_id` when a sub-agent runs tools. */
+export function toolCallKey(event: Pick<ToolEvent, "callId" | "threadId">): string {
+  return event.threadId ? `${event.threadId}:${event.callId}` : event.callId;
+}
 
 /** Pull tool_use / tool_result blocks out of one stream-json event. */
 export function extractToolEvents(event: unknown): ToolEvent[] {
   const record = asRecord(event);
   if (!record) return [];
+
+  const threadId = str(record.thread_id);
 
   if (record.type === "assistant") {
     const message = asRecord(record.message);
@@ -40,11 +51,14 @@ export function extractToolEvents(event: unknown): ToolEvent[] {
       if (item?.type !== "tool_use" || typeof item.id !== "string" || typeof item.name !== "string") {
         continue;
       }
+      const inputStatus = str(item.input_status);
       events.push({
         kind: "call",
         callId: item.id,
         name: item.name,
         input: asRecord(item.input) ?? {},
+        ...(threadId ? { threadId } : {}),
+        ...(inputStatus ? { inputStatus } : {}),
       });
     }
     return events;
@@ -59,11 +73,14 @@ export function extractToolEvents(event: unknown): ToolEvent[] {
     for (const block of content) {
       const item = asRecord(block);
       if (item?.type !== "tool_result" || typeof item.tool_use_id !== "string") continue;
+      const contentStatus = str(item.content_status);
       events.push({
         kind: "result",
         callId: item.tool_use_id,
         isError: item.is_error === true,
         output: textOf(item.content),
+        ...(threadId ? { threadId } : {}),
+        ...(contentStatus ? { contentStatus } : {}),
       });
     }
     return events;
@@ -75,14 +92,15 @@ export function extractToolEvents(event: unknown): ToolEvent[] {
 /** Build (or update) the timeline item for one tool call. */
 export function buildToolItem(call: ToolCall, result?: ToolResult): ToolCallItem {
   const state = result ? (result.isError ? "failed" : "completed") : "running";
+  const key = toolCallKey(call);
   const item = {
-    id: `tool:${call.callId}`,
+    id: `tool:${key}`,
     type: "tool_call" as const,
     callId: call.callId,
     name: call.name,
     detail: toolDetail(call.name, call.input, result),
     status: state,
-    error: state === "failed" ? { message: result?.output ?? "Tool failed" } : null,
+    error: state === "failed" ? { message: result?.output || "Tool failed" } : null,
   };
 
   return item as ToolCallItem;
@@ -94,7 +112,7 @@ function toolDetail(
   result?: ToolResult,
 ): ProviderToolCallDetail {
   const key = name.toLowerCase();
-  const output = capOutput(result?.output);
+  const output = formatToolOutput(result);
   const filePath = str(input.file_path) ?? str(input.path) ?? str(input.filePath);
 
   if (key.includes("bash") || key.includes("shell") || key.includes("exec")) {
@@ -143,6 +161,16 @@ function toolDetail(
   }
 
   return { type: "unknown", input, output: output ?? null } as unknown as ProviderToolCallDetail;
+}
+
+function formatToolOutput(result?: ToolResult): string | undefined {
+  if (!result) return undefined;
+  const output = capOutput(result.output);
+  if (result.contentStatus === "truncated") {
+    if (!output) return "[output truncated by CLI]";
+    return output.endsWith("[truncated]") ? output : `${output}\n[truncated]`;
+  }
+  return output;
 }
 
 function capOutput(text: string | undefined): string | undefined {

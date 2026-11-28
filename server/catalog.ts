@@ -34,7 +34,13 @@ interface RawModel {
 
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const cache = new Map<string, { value: ProviderCatalog; at: number }>();
-const inflight = new Map<string, Promise<ProviderCatalog>>();
+interface SharedProbe {
+  promise: Promise<ProviderCatalog>;
+  controller: AbortController;
+  waiters: number;
+  settled: boolean;
+}
+const inflight = new Map<string, SharedProbe>();
 
 export function catalogCacheKey(launch: ProviderLaunch): string {
   const env = Object.entries(launch.env ?? {}).sort(([a], [b]) => a.localeCompare(b));
@@ -45,6 +51,7 @@ export function catalogCacheKey(launch: ProviderLaunch): string {
 
 export function clearCatalogCache(): void {
   cache.clear();
+  for (const probe of inflight.values()) probe.controller.abort();
   inflight.clear();
 }
 
@@ -70,6 +77,7 @@ export async function loadCatalog(
   launch: ProviderLaunch,
   options: CatalogOptions = {},
 ): Promise<ProviderCatalog> {
+  options.signal?.throwIfAborted();
   const key = catalogCacheKey(launch);
   const ttl = options.ttlMs ?? CACHE_TTL_MS;
   const now = Date.now();
@@ -79,21 +87,64 @@ export async function loadCatalog(
     if (hit && now - hit.at < ttl) return hit.value;
 
     const running = inflight.get(key);
-    if (running) return running;
+    if (running) return waitForProbe(running, options.signal);
   }
 
-  const pending = discoverCatalog(launch, options)
+  const controller = new AbortController();
+  const probe: SharedProbe = {
+    controller,
+    waiters: 0,
+    settled: false,
+    promise: Promise.resolve(fallbackCatalog()),
+  };
+  probe.promise = discoverCatalog(launch, { ...options, signal: controller.signal })
     .then((catalog) => {
-      cache.set(key, { value: catalog, at: Date.now() });
+      // Do not poison the TTL cache with an empty fallback when a transient probe returns nothing.
+      if (catalog.models.length > 0) {
+        cache.set(key, { value: catalog, at: Date.now() });
+      }
       return catalog;
     })
-    .catch(() => fallbackCatalog())
+    .catch((error) => {
+      if (controller.signal.aborted) throw error;
+      return fallbackCatalog();
+    })
     .finally(() => {
-      inflight.delete(key);
+      probe.settled = true;
+      if (inflight.get(key) === probe) inflight.delete(key);
     });
 
-  inflight.set(key, pending);
-  return pending;
+  inflight.set(key, probe);
+  return waitForProbe(probe, options.signal);
+}
+
+function waitForProbe(probe: SharedProbe, signal?: AbortSignal): Promise<ProviderCatalog> {
+  probe.waiters += 1;
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const release = () => {
+      if (settled) return false;
+      settled = true;
+      signal?.removeEventListener("abort", abort);
+      probe.waiters -= 1;
+      if (probe.waiters === 0 && !probe.settled) probe.controller.abort();
+      return true;
+    };
+    const abort = () => {
+      if (!release()) return;
+      reject(signal?.reason ?? new Error("Catalog request cancelled"));
+    };
+    if (signal?.aborted) return abort();
+    signal?.addEventListener("abort", abort, { once: true });
+    probe.promise.then(
+      (value) => {
+        if (release()) resolve(value);
+      },
+      (error) => {
+        if (release()) reject(error);
+      },
+    );
+  });
 }
 
 async function discoverCatalog(

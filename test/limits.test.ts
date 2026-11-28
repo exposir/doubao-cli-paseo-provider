@@ -61,6 +61,15 @@ test("BoundedText keeps multi-byte text valid at the cut", () => {
   assert.equal(buffer.toString(), "你\n[truncated]");
 });
 
+test("BoundedText reassembles a multi-byte character split across Buffer chunks", () => {
+  const bytes = Buffer.from("橘猫", "utf8");
+  const buffer = new BoundedText(100);
+  buffer.append(bytes.subarray(0, 2));
+  buffer.append(bytes.subarray(2));
+  assert.equal(buffer.toString(), "橘猫");
+  assert.ok(!buffer.toString().includes("\uFFFD"));
+});
+
 test("BoundedText with a zero ceiling stores nothing", () => {
   const buffer = new BoundedText(0);
   buffer.append("anything");
@@ -72,21 +81,25 @@ test("environment variables override the defaults", () => {
   const saved = {
     turns: process.env.DOUBAO_PASEO_MAX_TURNS,
     turnMs: process.env.DOUBAO_PASEO_MAX_TURN_MS,
+    idle: process.env.DOUBAO_PASEO_IDLE_MS,
     disk: process.env.DOUBAO_PASEO_MIN_FREE_DISK_MB,
   };
 
   process.env.DOUBAO_PASEO_MAX_TURNS = "3";
   process.env.DOUBAO_PASEO_MAX_TURN_MS = "1000";
+  process.env.DOUBAO_PASEO_IDLE_MS = "0";
   process.env.DOUBAO_PASEO_MIN_FREE_DISK_MB = "10";
 
   try {
     const limits = resolveLimits();
     assert.equal(limits.maxConcurrentTurns, 3);
     assert.equal(limits.maxTurnMs, 1000);
+    assert.equal(limits.idleRuntimeMs, 0);
     assert.equal(limits.minFreeDiskBytes, 10 * 1024 * 1024);
   } finally {
     restore("DOUBAO_PASEO_MAX_TURNS", saved.turns);
     restore("DOUBAO_PASEO_MAX_TURN_MS", saved.turnMs);
+    restore("DOUBAO_PASEO_IDLE_MS", saved.idle);
     restore("DOUBAO_PASEO_MIN_FREE_DISK_MB", saved.disk);
   }
 });

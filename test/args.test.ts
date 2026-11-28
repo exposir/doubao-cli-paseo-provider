@@ -2,10 +2,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { buildTurnArgs } from "../server/args.js";
 
-test("a fresh turn asks for streaming JSON and sends the prompt and cwd", () => {
-  assert.deepEqual(buildTurnArgs({ text: "hello", cwd: "/root/work" }), [
+test("a fresh turn asks for streaming JSON and reads the prompt from stdin", () => {
+  assert.deepEqual(buildTurnArgs({ cwd: "/root/work" }), [
     "-p",
-    "hello",
+    "-",
     "--output-format",
     "stream-json",
     "-C",
@@ -13,13 +13,13 @@ test("a fresh turn asks for streaming JSON and sends the prompt and cwd", () => 
   ]);
 });
 
-test("a resumed turn puts --resume before the prompt", () => {
-  const args = buildTurnArgs({ sessionId: "38456440663565058", text: "继续", cwd: "/w" });
+test("a resumed turn puts --resume before -p -", () => {
+  const args = buildTurnArgs({ sessionId: "38456440663565058", cwd: "/w" });
   assert.deepEqual(args, [
     "--resume",
     "38456440663565058",
     "-p",
-    "继续",
+    "-",
     "--output-format",
     "stream-json",
     "-C",
@@ -29,14 +29,13 @@ test("a resumed turn puts --resume before the prompt", () => {
 
 test("model, effort and permission mode are forwarded", () => {
   const args = buildTurnArgs({
-    text: "do it",
     model: "person-deepseek-v4-1-flash-261017",
     thinkingOption: "max",
     mode: "always_allow",
   });
   assert.deepEqual(args, [
     "-p",
-    "do it",
+    "-",
     "--output-format",
     "stream-json",
     "--model",
@@ -49,6 +48,6 @@ test("model, effort and permission mode are forwarded", () => {
 });
 
 test("unset optional fields are omitted entirely", () => {
-  const args = buildTurnArgs({ text: "x", sessionId: null, model: undefined });
-  assert.deepEqual(args, ["-p", "x", "--output-format", "stream-json"]);
+  const args = buildTurnArgs({ sessionId: null, model: undefined });
+  assert.deepEqual(args, ["-p", "-", "--output-format", "stream-json"]);
 });

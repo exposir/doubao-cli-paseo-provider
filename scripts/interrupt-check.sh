@@ -20,7 +20,15 @@ print(s.getsockname()[1])
 s.close()
 PY
 )"
-MARKER="paseo-$(printf '%s' "$HOME_DIR" | sha256sum | cut -c1-12)"
+sha256_hex() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum | cut -d' ' -f1
+  else
+    shasum -a 256 | cut -d' ' -f1
+  fi
+}
+
+MARKER="paseo-$(printf '%s' "$HOME_DIR" | sha256_hex | cut -c1-12)"
 
 cleanup() {
   paseo --home "$HOME_DIR" daemon stop >/dev/null 2>&1 || true
@@ -38,6 +46,13 @@ fail() {
 }
 
 count_marked() {
+  if [ ! -d /proc/1 ]; then
+    local matches
+    matches="$(ps -axww -E -o pid=,command= 2>/dev/null |
+      grep -Ec "(^|[[:space:]])PASEO_DOUBAO_CHILD=${MARKER}([[:space:]]|$)" || true)"
+    echo "${matches:-0}"
+    return
+  fi
   local count=0
   for proc in /proc/[0-9]*; do
     [ -r "${proc}/environ" ] || continue

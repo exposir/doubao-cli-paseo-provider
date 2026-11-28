@@ -11,6 +11,8 @@ set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 EXPECT="${PASEO_E2E_EXPECT:-E2E-OK}"
+TRANSPORT="${DOUBAO_PASEO_TRANSPORT:-stream-json}"
+export DOUBAO_PASEO_TRANSPORT="$TRANSPORT"
 PROMPT="只回复四个字符：${EXPECT}"
 FOLLOW_UP="我刚才让你回复什么？只回答那个字符串"
 
@@ -43,7 +45,7 @@ cat > "$HOME_DIR/config.json" <<JSON
 }
 JSON
 
-echo "==> daemon on 127.0.0.1:${PORT} (home: ${HOME_DIR})"
+echo "==> daemon on 127.0.0.1:${PORT} (home: ${HOME_DIR}, transport: ${TRANSPORT})"
 paseo --home "$HOME_DIR" daemon start >/dev/null
 
 echo "==> installing plugin"

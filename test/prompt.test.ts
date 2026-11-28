@@ -25,6 +25,38 @@ test("text blocks are kept in order", () => {
   assert.equal(text, "first\n\nsecond");
 });
 
+test("text attachments preserve their title without changing plain text blocks", () => {
+  const text = formatPromptContent([
+    { type: "text", title: "Requirements", text: "Use the existing API." },
+    { type: "text", text: "Keep the response concise." },
+  ]);
+  assert.equal(
+    text,
+    "[Text attachment: Requirements]\nUse the existing API.\n\nKeep the response concise.",
+  );
+});
+
+test("text attachments preserve external resource identity and URL", () => {
+  const text = formatPromptContent([{
+    type: "text",
+    mimeType: "text/plain",
+    text: "Resolve the linked issue.",
+    externalResource: {
+      provider: "github",
+      providerLabel: "GitHub",
+      resourceType: "issue",
+      id: "I_123",
+      identifier: "o/r#123",
+      title: "Transport regression",
+      url: "https://github.example/o/r/issues/123",
+    },
+  }]);
+  assert.equal(
+    text,
+    "[External resource: GitHub: Transport regression (https://github.example/o/r/issues/123)]\nResolve the linked issue.",
+  );
+});
+
 test("image and uploaded file become readable context blocks", () => {
   const text = formatPromptContent([
     { type: "image", data: "base64", mimeType: "image/png" },

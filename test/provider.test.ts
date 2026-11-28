@@ -28,7 +28,7 @@ esac
   return { launch: { command, args: [], env: {} }, dir };
 }
 
-function waitFor(predicate: () => boolean, timeoutMs = 2000): Promise<void> {
+function waitFor(predicate: () => boolean, timeoutMs = 5000): Promise<void> {
   return new Promise((resolve, reject) => {
     const started = Date.now();
     const tick = () => {
@@ -47,15 +47,18 @@ test("status reports unavailable when the daemon has no launch", async () => {
   assert.match(status.diagnostic ?? "", /not found on PATH/);
 });
 
+const EXIT_OK: ProviderLaunch = { command: process.execPath, args: ["-e", "process.exit(0)"], env: {} };
+const EXIT_FAIL: ProviderLaunch = { command: process.execPath, args: ["-e", "process.exit(1)"], env: {} };
+
 test("status treats a successful auth check as available", async () => {
   const registration = createDoubaoProvider();
-  const status = await registration.status!({ launch: { command: "/bin/true", args: [], env: {} } });
+  const status = await registration.status!({ launch: EXIT_OK });
   assert.equal(status.available, true);
 });
 
 test("status reports a diagnostic when auth fails", async () => {
   const registration = createDoubaoProvider();
-  const status = await registration.status!({ launch: { command: "/bin/false", args: [], env: {} } });
+  const status = await registration.status!({ launch: EXIT_FAIL });
   assert.equal(status.available, false);
   assert.match(status.diagnostic ?? "", /not usable/);
 });
@@ -633,6 +636,87 @@ fi
   assert.equal(calls.length, 2);
   assert.ok(calls.some((call) => /--limit 1$/.test(call)));
   assert.ok(calls.some((call) => /--limit 200$/.test(call)));
+
+  await connection.close();
+});
+
+test("closing a connection during an active turn delivers the canceled turn event", async () => {
+  clearCatalogCache();
+  const { launch, dir } = sleepCli();
+  const registration = createDoubaoProvider({ limits: { stallTimeoutMs: 0 } });
+  const connection = await registration.connect({
+    versions: [1],
+    capabilities: ["prompt.message"],
+    launch,
+  });
+
+  const events: ProviderEvent[] = [];
+  connection.onEvent((event) => events.push(event));
+
+  await connection.send({
+    type: "session.open",
+    requestId: "open-1",
+    sessionId: "s-1",
+    history: "skip",
+    config: { cwd: dir, env: {}, mcpServers: {}, settings: {}, persist: false },
+  });
+  await waitFor(() => events.some((event) => event.type === "session.ready"));
+
+  await connection.send({
+    type: "session.prompt",
+    sessionId: "s-1",
+    prompt: {
+      clientMessageId: "c-1",
+      delivery: "auto",
+      input: { type: "message", content: [{ type: "text", text: "hi" }] },
+    },
+  });
+  await waitFor(() => events.some((event) => event.type === "session.persistence"));
+
+  await connection.close();
+
+  assert.ok(
+    events.some((event) => event.type === "session.turn" && event.state === "canceled"),
+    "expected terminal canceled event before connection closed",
+  );
+});
+
+test("a transient empty catalogue probe does not pin an empty catalogue on the connection", async () => {
+  clearCatalogCache();
+  const dir = mkdtempSync(join(tmpdir(), "doubao-catrecover-"));
+  const command = join(dir, "doubao");
+  writeFileSync(
+    command,
+    `#!/usr/bin/env bash
+if [ ! -f "${dir}/ok" ]; then
+  touch "${dir}/ok"
+  exit 1
+fi
+printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"result":{"type":"model_list","models":[{"id":"m1","name":"Model One","is_default":true}]}}'
+`,
+  );
+  chmodSync(command, 0o755);
+
+  const registration = createDoubaoProvider();
+  const connection = await registration.connect({
+    versions: [1],
+    capabilities: ["prompt.message"],
+    launch: { command, args: [], env: {} },
+  });
+
+  const events: ProviderEvent[] = [];
+  connection.onEvent((event) => events.push(event));
+
+  await connection.send({ type: "catalog", requestId: "cat-1" });
+  await waitFor(() => events.some((event) => event.type === "catalog" && event.requestId === "cat-1"));
+
+  await connection.send({ type: "catalog", requestId: "cat-2" });
+  await waitFor(() => events.some((event) => event.type === "catalog" && event.requestId === "cat-2"));
+
+  const second = events.find((event) => event.type === "catalog" && event.requestId === "cat-2");
+  assert.ok(second && second.type === "catalog");
+  assert.equal(second.catalog.models.length, 1);
+  assert.equal(second.catalog.models[0].id, "m1");
 
   await connection.close();
 });

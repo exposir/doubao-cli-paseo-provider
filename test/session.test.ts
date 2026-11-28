@@ -19,12 +19,28 @@ interface FakeCli {
   dir: string;
 }
 
-function fakeCli(body: string): FakeCli {
+function fakeCli(body: string, options: { captureStdin?: boolean } = {}): FakeCli {
   const dir = mkdtempSync(join(tmpdir(), "doubao-fake-"));
   const command = join(dir, "doubao");
-  writeFileSync(command, `#!/usr/bin/env bash\nprintf '%s\\n' "$*" >> "${dir}/args.log"\n${body}\n`);
+  const capture = options.captureStdin ? `cat > "${dir}/stdin.log"\n` : "";
+  writeFileSync(
+    command,
+    `#!/usr/bin/env bash\nprintf '%s\\n' "$*" >> "${dir}/args.log"\n${capture}${body}\n`,
+  );
   chmodSync(command, 0o755);
   return { command, dir };
+}
+
+function waitFor(predicate: () => boolean, timeoutMs = 3000): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const started = Date.now();
+    const tick = () => {
+      if (predicate()) return resolve();
+      if (Date.now() - started > timeoutMs) return reject(new Error("timed out"));
+      setTimeout(tick, 10);
+    };
+    tick();
+  });
 }
 
 function prompt(text = "hi"): ProviderPrompt {
@@ -88,10 +104,19 @@ const CATALOG: ProviderCatalog = {
   defaultThinkingOption: "max",
 };
 
-function assistantText(events: ProviderEvent[]): string {
+function assistantMessages(events: ProviderEvent[]): Array<{ id: string; text: string }> {
   return events
     .filter((event) => event.type === "timeline.item" && event.item.type === "assistant_message")
-    .map((event) => (event.type === "timeline.item" && event.item.type === "assistant_message" ? event.item.text : ""))
+    .map((event) =>
+      event.type === "timeline.item" && event.item.type === "assistant_message"
+        ? { id: event.item.id, text: event.item.text }
+        : { id: "", text: "" },
+    );
+}
+
+function assistantText(events: ProviderEvent[]): string {
+  return assistantMessages(events)
+    .map((item) => item.text)
     .join("");
 }
 
@@ -164,6 +189,27 @@ test("a non-zero exit becomes a failed turn with the stderr text", async () => {
   assert.deepEqual(cleared.persistence.data, { doubaoSessionId: null });
 });
 
+test("exit code 4 (login_required) preserves the persisted native session id", async () => {
+  const cli = fakeCli(
+    [`echo "login_required: 需要登录" >&2`, `exit 4`].join("\n"),
+  );
+  const events: ProviderEvent[] = [];
+  const session = createSession(cli, cli.dir, events, {
+    persistence: { version: 1, data: { doubaoSessionId: "keep-me" } },
+  });
+
+  await session.prompt(prompt());
+
+  const failed = events.find((event) => event.type === "session.turn" && event.state === "failed");
+  assert.ok(failed && failed.type === "session.turn");
+  assert.equal(failed.error?.code, "EXIT_4");
+  assert.equal(
+    (session.getPersistence()?.data as { doubaoSessionId?: string } | undefined)?.doubaoSessionId,
+    "keep-me",
+  );
+  assert.ok(!events.some((event) => event.type === "session.persistence"));
+});
+
 test("a result event with is_error fails the turn even when the process exits 0", async () => {
   const cli = fakeCli(
     `printf '%s\\n' '{"type":"result","subtype":"error_max_turns","is_error":true,"result":{"type":"text","content":"quota exceeded"}}'`,
@@ -177,6 +223,92 @@ test("a result event with is_error fails the turn even when the process exits 0"
   assert.ok(failed && failed.type === "session.turn");
   assert.equal(failed.error?.code, "DOUBAO_RESULT_ERROR");
   assert.equal(failed.error?.message, "quota exceeded");
+});
+
+test("a CLI result error reports its message, structured code and cloud log_id", async (t) => {
+  const warn = t.mock.method(console, "warn", () => {});
+  const cli = fakeCli(
+    `printf '%s\\n' '{"type":"result","subtype":"error_during_execution","is_error":true,"log_id":"cloud-trace-123","errors":["User input is required"],"error":{"code":"interaction_required"},"permission_denials":[{"tool_name":"Bash","tool_use_id":"t1","prompt":"rm -rf /"}]}'`,
+  );
+  const events: ProviderEvent[] = [];
+  const session = createSession(cli, cli.dir, events);
+
+  await session.prompt(prompt());
+
+  const failed = events.find((event) => event.type === "session.turn" && event.state === "failed");
+  assert.ok(failed && failed.type === "session.turn");
+  assert.equal(failed.error?.code, "DOUBAO_INTERACTION_REQUIRED");
+  assert.equal(failed.error?.message, "User input is required (log_id: cloud-trace-123)");
+  assert.ok(warn.mock.calls.some(({ arguments: args }) => String(args[0]).includes("log_id: cloud-trace-123")));
+
+  assert.ok(
+    events.some(
+      (event) =>
+        event.type === "timeline.item" &&
+        event.item.type === "notification" &&
+        /automatically denied.*Bash/i.test(event.item.message),
+    ),
+  );
+});
+
+test("a trailing NDJSON event without a newline is still processed on exit", async () => {
+  const cli = fakeCli(
+    `printf '%s' '{"type":"result","subtype":"success","is_error":false,"session_id":"sess-tail","result":{"type":"text","content":"no-newline"}}'`,
+  );
+  const events: ProviderEvent[] = [];
+  const session = createSession(cli, cli.dir, events);
+
+  await session.prompt(prompt());
+
+  assert.equal(assistantText(events), "no-newline");
+  assert.equal(
+    (session.getPersistence()?.data as { doubaoSessionId?: string } | undefined)?.doubaoSessionId,
+    "sess-tail",
+  );
+});
+
+test("a shorter authoritative replacement after streamed deltas is still emitted", async () => {
+  const cli = fakeCli(
+    [
+      `printf '%s\\n' '{"type":"system","session_id":"sess-1"}'`,
+      `printf '%s\\n' '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"${"a".repeat(300)}"}}}'`,
+      `sleep 0.15`,
+      `printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"result":{"type":"text","content":"short final"}}'`,
+    ].join("\n"),
+  );
+  const events: ProviderEvent[] = [];
+  const session = createSession(cli, cli.dir, events);
+
+  await session.prompt(prompt());
+
+  const messages = assistantMessages(events);
+  assert.ok(messages.length >= 2, "expected initial delta flush and shorter final replacement");
+  assert.equal(messages.at(-1)?.text, "short final");
+});
+
+test("multi-message turns with tool calls emit distinct assistant items in order", async () => {
+  const cli = fakeCli(
+    [
+      `printf '%s\\n' '{"type":"system","session_id":"sess-1"}'`,
+      `printf '%s\\n' '{"type":"stream_event","message_id":"m1","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Checking..."}}}'`,
+      `printf '%s\\n' '{"type":"assistant","message":{"id":"m1","content":[{"type":"text","text":"Checking..."}]}}'`,
+      `printf '%s\\n' '{"type":"assistant","message":{"id":"m1:tool_use:t1","content":[{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"a.txt"}}]}}'`,
+      `printf '%s\\n' '{"type":"user","message":{"id":"m1:tool_result:t1","content":[{"type":"tool_result","tool_use_id":"t1","is_error":false,"content":[{"type":"text","text":"42"}]}]}}'`,
+      `printf '%s\\n' '{"type":"stream_event","message_id":"m2","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Answer: 42"}}}'`,
+      `printf '%s\\n' '{"type":"assistant","message":{"id":"m2","content":[{"type":"text","text":"Answer: 42"}]}}'`,
+      `printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"message_id":"m2","result":{"type":"text","content":"Answer: 42"}}'`,
+    ].join("\n"),
+  );
+  const events: ProviderEvent[] = [];
+  const session = createSession(cli, cli.dir, events);
+
+  await session.prompt(prompt());
+
+  const messages = assistantMessages(events);
+  assert.equal(messages.length, 2);
+  assert.notEqual(messages[0].id, messages[1].id);
+  assert.equal(messages[0].text, "Checking...");
+  assert.equal(messages[1].text, "Answer: 42");
 });
 
 test("a silent success produces a readable placeholder instead of an empty message", async () => {
@@ -206,6 +338,26 @@ test("an empty prompt is rejected before spawning anything", async () => {
   assert.equal(existsSync(join(cli.dir, "args.log")), false);
 });
 
+test("back-to-back concurrent prompts on the same session are rejected synchronously", async () => {
+  const cli = fakeCli(
+    [`printf '%s\\n' '{"type":"system","session_id":"sess-1"}'`, `exec sleep 10`].join("\n"),
+  );
+  const events: ProviderEvent[] = [];
+  const session = createSession(cli, cli.dir, events);
+
+  // Fire second prompt immediately while first is still awaiting freeDiskBytes().
+  const first = session.prompt(prompt("first"));
+  await assert.rejects(session.prompt(prompt("second")), /already running/);
+
+  await waitFor(() => events.some((event) => event.type === "session.persistence"));
+  await session.interrupt();
+  await first;
+
+  const calls = readFileSync(join(cli.dir, "args.log"), "utf8").trim().split("\n");
+  assert.equal(calls.length, 1);
+  assert.ok(events.some((event) => event.type === "session.turn" && event.state === "canceled"));
+});
+
 test("a second prompt while one is running is rejected", async () => {
   const cli = fakeCli(
     [`printf '%s\\n' '{"type":"system","session_id":"sess-1"}'`, `exec sleep 10`].join("\n"),
@@ -214,7 +366,7 @@ test("a second prompt while one is running is rejected", async () => {
   const session = createSession(cli, cli.dir, events);
 
   const running = session.prompt(prompt("long"));
-  await new Promise((resolve) => setTimeout(resolve, 200));
+  await waitFor(() => events.some((event) => event.type === "session.persistence"));
 
   await assert.rejects(session.prompt(prompt("second")), /already running/);
 
@@ -232,7 +384,7 @@ test("interrupt cancels the turn and keeps the session usable", async () => {
   const session = createSession(cli, cli.dir, events);
 
   const running = session.prompt(prompt());
-  await new Promise((resolve) => setTimeout(resolve, 200));
+  await waitFor(() => events.some((event) => event.type === "session.persistence"));
   assert.equal(session.canStopRuntime(), false);
 
   await session.interrupt();
@@ -253,7 +405,7 @@ test("closing an idle session does not emit another turn", async () => {
   await assert.rejects(session.prompt(prompt()), /Session is closed/);
 });
 
-test("open publishes the catalogue defaults and the per-model thinking options", () => {
+test("open publishes catalogue defaults, empty slash commands and per-model thinking options", () => {
   const cli = fakeCli(HAPPY);
   const events: ProviderEvent[] = [];
   const session = createSession(cli, cli.dir, events, { catalog: CATALOG });
@@ -272,8 +424,11 @@ test("open publishes the catalogue defaults and the per-model thinking options",
   assert.equal(config.config.models.length, 2);
   assert.equal(config.config.thinkingOptions.length, 2);
 
+  const commands = events.find((event) => event.type === "session.commands");
+  assert.ok(commands && commands.type === "session.commands");
+  assert.deepEqual(commands.commands, []);
+
   assert.ok(events.some((event) => event.type === "session.ready"));
-  assert.ok(events.some((event) => event.type === "session.commands"));
 });
 
 test("configure republishes the committed values", () => {
@@ -293,8 +448,8 @@ test("configure republishes the committed values", () => {
   assert.equal(config.config.thinkingOption, "low");
 });
 
-test("model, effort, mode and cwd are forwarded to the CLI", async () => {
-  const cli = fakeCli(HAPPY);
+test("model, effort, mode and cwd are forwarded to the CLI while prompt goes over stdin", async () => {
+  const cli = fakeCli(HAPPY, { captureStdin: true });
   const events: ProviderEvent[] = [];
   const session = createSession(cli, cli.dir, events, {
     catalog: CATALOG,
@@ -304,12 +459,13 @@ test("model, effort, mode and cwd are forwarded to the CLI", async () => {
   await session.prompt(prompt("hello"));
 
   const call = readFileSync(join(cli.dir, "args.log"), "utf8");
-  assert.match(call, /-p hello/);
+  assert.match(call, /-p -/);
   assert.match(call, /--output-format stream-json/);
   assert.match(call, /-C /);
   assert.match(call, /--model m2/);
   assert.match(call, /--effort low/);
   assert.match(call, /--permission-mode always_allow/);
+  assert.equal(readFileSync(join(cli.dir, "stdin.log"), "utf8"), "hello");
 });
 
 test("closing during a turn still reports the cancel", async () => {
@@ -320,7 +476,7 @@ test("closing during a turn still reports the cancel", async () => {
   const session = createSession(cli, cli.dir, events);
 
   const running = session.prompt(prompt());
-  await new Promise((resolve) => setTimeout(resolve, 200));
+  await waitFor(() => events.some((event) => event.type === "session.persistence"));
 
   await session.close();
   await running;
@@ -444,6 +600,28 @@ test("stderr is bounded before it reaches the error message", async () => {
   assert.ok(Buffer.byteLength(failed.error?.message ?? "") < 400);
 });
 
+test("an oversized stream-json line is stopped without throwing into the daemon", async (t) => {
+  const warn = t.mock.method(console, "warn", () => {});
+  const cli = fakeCli(
+    `"${process.execPath}" -e "process.stdout.write('x'.repeat(${16 * 1024 * 1024 + 1}))"`,
+  );
+  const events: ProviderEvent[] = [];
+  const session = createSession(cli, cli.dir, events, {
+    persistence: { version: 1, data: { doubaoSessionId: "before-overflow" } },
+  });
+
+  await session.prompt(prompt());
+
+  const failed = events.find((event) => event.type === "session.turn" && event.state === "failed");
+  assert.ok(failed && failed.type === "session.turn");
+  assert.equal(failed.error?.code, "STREAM_LINE_TOO_LARGE");
+  assert.match(failed.error?.message ?? "", /16777216 bytes/);
+  assert.ok(warn.mock.calls.some(({ arguments: args }) =>
+    String(args[0]).includes("stream-json line above")));
+  assert.ok(events.some((event) => event.type === "session.persistence" &&
+    (event.persistence.data as { doubaoSessionId?: unknown }).doubaoSessionId === null));
+});
+
 test("a turn that exceeds the time limit is stopped", async () => {
   const cli = fakeCli(
     [`printf '%s\\n' '{"type":"system","session_id":"sess-1"}'`, `exec sleep 10`].join("\n"),
@@ -529,11 +707,12 @@ test("tool calls become timeline items with running and completed states", async
   }
 });
 
-test("a recursive doubao command is blocked and the turn is canceled", async () => {
+test("a recursive doubao command is blocked and late tool_result cannot overwrite canceled", async () => {
   const cli = fakeCli(
     [
-      `printf '%s\n' '{"type":"system","session_id":"sess-1"}'`,
-      `printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"doubao -p hi"}}]}}'`,
+      `printf '%s\\n' '{"type":"system","session_id":"sess-1"}'`,
+      `printf '%s\\n' '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"doubao -C /tmp -p hi"}}]}}'`,
+      `printf '%s\\n' '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","is_error":false,"content":[{"type":"text","text":"late output"}]}]}}'`,
       `exec sleep 10`,
     ].join("\n"),
   );
@@ -593,27 +772,16 @@ test("the approval notice can be suppressed for controlled environments", () => 
     delete process.env.DOUBAO_PASEO_SUPPRESS_NOTICES;
   }
 });
-test("prompts about the provider carry a safety note", async () => {
-  const cli = fakeCli(HAPPY);
+
+test("user prompts mentioning provider or tests are forwarded unmodified", async () => {
+  const cli = fakeCli(HAPPY, { captureStdin: true });
   const events: ProviderEvent[] = [];
   const session = createSession(cli, cli.dir, events);
+  const original = "分析下 auth provider 的实现并补充单元测试 (npm test)";
 
-  await session.prompt(prompt("分析下这个 doubao Provider"));
+  await session.prompt(prompt(original));
 
-  const call = readFileSync(join(cli.dir, "args.log"), "utf8");
-  assert.match(call, /Paseo safety note/);
-  assert.match(call, /Do not execute/);
-});
-
-test("ordinary prompts do not carry the safety note", async () => {
-  const cli = fakeCli(HAPPY);
-  const events: ProviderEvent[] = [];
-  const session = createSession(cli, cli.dir, events);
-
-  await session.prompt(prompt("今天有哪些新闻"));
-
-  const call = readFileSync(join(cli.dir, "args.log"), "utf8");
-  assert.doesNotMatch(call, /Paseo safety note/);
+  assert.equal(readFileSync(join(cli.dir, "stdin.log"), "utf8"), original);
 });
 
 test("a prompt exactly at the cap is accepted", async () => {
@@ -725,7 +893,7 @@ test("the session is usable after an interrupt", async () => {
   const session = createSession(cli, cli.dir, events);
 
   const first = session.prompt(prompt("first"));
-  await new Promise((resolve) => setTimeout(resolve, 200));
+  await waitFor(() => events.some((event) => event.type === "session.persistence"));
   await session.interrupt();
   await first;
 
@@ -749,31 +917,21 @@ test("close is idempotent", async () => {
   assert.equal(session.canStopRuntime(), true);
 });
 
-test("the prompt is passed as one argv entry, never through a shell", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "doubao-argv-"));
-  const command = join(dir, "doubao");
-  writeFileSync(
-    command,
-    `#!/usr/bin/env bash
-{
-  echo "argc=$#"
-  for arg in "$@"; do printf '[%s]\\n' "$arg"; done
-} >> "$(dirname "$0")/argv.log"
-printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"result":{"type":"text","content":"ok"}}'
-`,
+test("prompts with shell metacharacters and >128 KiB size pass verbatim over stdin", async () => {
+  const cli = fakeCli(
+    `printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"result":{"type":"text","content":"ok"}}'`,
+    { captureStdin: true },
   );
-  chmodSync(command, 0o755);
-
   const events: ProviderEvent[] = [];
-  const session = createSession({ command, dir }, dir, events);
-  const text = 'a"; rm -rf /tmp/x; echo "b $(whoami) `id`';
+  const session = createSession(cli, cli.dir, events);
+  const text = `a"; rm -rf /tmp/x; echo "b $(whoami) \`id\`\n${"z".repeat(160 * 1024)}`;
 
   await session.prompt(prompt(text));
 
-  const lines = readFileSync(join(dir, "argv.log"), "utf8").trim().split("\n");
-  // -p <text> --output-format stream-json -C <cwd>
-  assert.equal(lines[0], "argc=6");
-  assert.ok(lines.includes(`[${text}]`));
+  const received = readFileSync(join(cli.dir, "stdin.log"), "utf8");
+  assert.equal(received, text);
+  const args = readFileSync(join(cli.dir, "args.log"), "utf8").trim();
+  assert.equal(args, `-p - --output-format stream-json -C ${cli.dir}`);
 });
 
 test("an assistant message over the cap is truncated too", async () => {

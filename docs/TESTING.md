@@ -5,27 +5,32 @@ Four layers, cheapest first. Each layer is independently runnable.
 | Layer | Command | Needs CLI | Needs login | Model calls |
 | --- | --- | --- | --- | --- |
 | Unit | `npm test` | no | no | 0 |
-| Live CLI | `npm run test:live` | yes | yes | 0 (discovery only) |
+| Live CLI | `npm run test:live` | yes | yes | 1 short completion |
 | Daemon E2E | `npm run e2e` | yes | yes | 2 text turns |
 | Drawing E2E | `npm run e2e:draw` | yes | yes | 2 image turns + 1 text turn |
 
 ## Unit
 
-`npm test` compiles with `tsc` and runs `node --test` over `dist/test/`.
+`npm test` compiles with `tsc` and runs `node --test` over `dist/test/`. It runs
+233 unit tests, including 55 ACP tests, and skips four live tests by default.
+The same suite runs with the Paseo 0.15.0 and 0.17.6 plugin SDKs. ACP launch wrapping
+and request cancellation are exercised when the SDK advertises those capabilities.
 
 | File | Covers |
 | --- | --- |
-| `stream.test.ts` | NDJSON framing across chunk boundaries, CRLF, a multi-byte character split across buffers, delta accumulation, assistant/result precedence, duplicate session ids, non-text deltas, error results, subtype-only errors, array content, unknown events |
+| `stream.test.ts` | NDJSON framing, split UTF-8, assistant/result precedence, error results, and cloud `result.log_id` extraction |
 | `catalog.test.ts` | model-list mapping, per-model effort levels, duplicate ids, malformed entries, cache keys, TTL/force, single-flight probing, failure fallback |
 | `sessions.test.ts` | `--list` payload mapping, malformed rows, persisted native session ids |
 | `args.test.ts` | CLI argument order for fresh and resumed turns |
 | `prompt.test.ts` | text, image, uploaded file, GitHub and forge PR/issue formatting, review comments, unknown attachment types |
 | `errors.test.ts` | stderr cleanup, truncation boundaries, error codes |
-| `session.test.ts` | session state machine against a fake CLI: happy path, resume args, restored persistence id, non-zero exit, result errors, empty prompt, concurrent prompt, interrupt and reuse, close during a turn, idempotent close, open/configure events, configure(null) reset, prompt size cap, timeout, stall watchdog, output caps, burst coalescing, argv safety against shell metacharacters |
+| `session.test.ts` | stream-json state machine, resume, prompt and turn limits, interrupts, shell argument handling, result errors, and `log_id` in Paseo errors and daemon logs |
 | `provider.test.ts` | registration, version/launch validation, capability negotiation, catalogue and session-list dispatch, unknown sessions (prompt/configure/close), unnegotiated requests, idempotent close, cache keys, concurrency cap and slot release, catalogue failure fallback, session-list limit clamping |
 | `cli.test.ts` | last-protocol-line extraction over logs, noise and malformed tails |
 | `limits.test.ts` | limit merging, invalid-value fallback, UTF-8-safe truncation, byte-bounded buffers |
-| `tools.test.ts` | tool_use/tool_result extraction, shell/read/edit/search mapping, failed calls |
+| `tools.test.ts` | tool_use/tool_result extraction, shell/read/edit/search mapping, failed calls, thread_id scoping |
+| `acp.test.ts` | Native ACP v1 mapping and bidirectional JSON-RPC over real stdio to a fake CLI, including `prompt.image` materialization and cleanup, `elicitation/create` questions, `fs/read_text_file` callbacks and cumulative resource-link budgets, command/skill kinds, `systemPrompt` injection, `installation.inspect`, early commands, load/replay and fallback, permissions, watchdogs, graceful cancellation, POSIX group kill, idle reclaim, hot resume, stderr, shared turn cap, prompt/output/disk guards, config, MCP, launch wrapping, auth, catalog and listing |
+| `reaper.test.ts` | Marker ownership, orphan cleanup and process-group termination |
 | `performance.test.ts` | 20k delta reduction stays linear, and the byte cap does not rescan the answer |
 
 No network, no CLI, safe for CI.
@@ -35,7 +40,8 @@ No network, no CLI, safe for CI.
 The guards sit on the hot path, so each check is O(chunk), never O(answer):
 
 - byte length is tracked incrementally; the cap check never re-scans accumulated text;
-- timeline updates are coalesced: 80 ms tick, 256-byte growth floor, 500 ms idle ceiling;
+- timeline updates are coalesced on an 80 ms tick. The stream-json reducer also uses a
+  256-byte growth floor and a 500 ms idle ceiling;
 - the stall watchdog uses `timer.refresh()` instead of allocating a timer per chunk;
 - stderr is byte-bounded as it is appended;
 - comparing the accumulated answer (O(n)) was removed from the per-token path in favour of
@@ -51,7 +57,9 @@ the capped variant in ~15 ms. A 2,000-delta burst produces fewer than 32 timelin
 - `live.test.ts` — real `doubao model list --output-format json` and `doubao --list --output-format json`
 - `live-provider.test.ts` — opens a provider connection in-process, sends one prompt, waits for `session.turn: completed`, asserts the assistant text and that `session.persistence` fired
 
-These need a logged-in CLI (`doubao auth status` exits 0). They cost one tiny model call.
+These need a logged-in CLI (`doubao auth status` exits 0). They cost one short model call.
+The ACP suite uses a local stdio fixture and exercises process behavior with short,
+per-test limits, including `idleRuntimeMs` (`DOUBAO_PASEO_IDLE_MS` in the daemon).
 
 ## Daemon E2E
 
@@ -157,4 +165,6 @@ agent is back to `idle`. Costs one partial image generation.
 
 ## Cost and time
 
-Unit tests run in about a second. The live provider test takes ~5–10s and one short completion. The drawing flow takes roughly 1.5–3 minutes because it generates two images.
+The unit suite takes about 17 seconds on the development host. The live provider test takes
+~5–10s and one short completion. The drawing flow takes roughly 1.5–3 minutes because it
+generates two images.
